@@ -1,0 +1,10 @@
+# 工程入口
+
+项目范围与指标原则见 [PERFORMANCE_PLAN.md](PERFORMANCE_PLAN.md)，实际已实现能力和执行方式见 [README.md](README.md)。规划中的未实现指标不能在报告中冒充实测值。
+
+- 首版仅支持同机 C01 ROS 2 跨进程与 S01 周期任务；跨设备时钟、GPU 与内核事件分析另行实现。
+- 保留原始 CSV、环境、配置和运行状态；失败运行退出非零，不覆盖已有结果。
+- 延迟是完成样本的条件分布，未完成及无效交付另列；消息未交付不能直接判为网络丢包。
+- Python 运行依赖限标准库；C++ 以 ROS 2 与 Linux 接口为基础。容器测试不得使用不同 CPU 架构仿真来报告目标平台性能。
+- 检查入口：`python3 -m unittest discover -s tests -v`、`bash -n scripts/run-docker.sh`、容器 smoke 实测。修改进程清理或指标统计时补相关故障与独立已知数据验证。
+- `results/`、`build/` 和离线 bundle 不进入源码提交；不要发布设备现场信息或本机路径。

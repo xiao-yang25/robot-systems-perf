@@ -1,0 +1,73 @@
+{
+  "format_version": 1,
+  "record_status": "template_not_measured",
+  "platform_profile_id": null,
+  "recorded_at": null,
+  "hardware": {
+    "family": null,
+    "module_model": null,
+    "carrier_board": null,
+    "memory_bytes": null,
+    "cpu_topology": null,
+    "storage": null,
+    "test_devices_and_interfaces": []
+  },
+  "host_software": {
+    "ubuntu_version": null,
+    "jetpack_version": null,
+    "jetson_linux_bsp_version": null,
+    "kernel_release": null,
+    "kernel_build_id": null,
+    "kernel_preemption_configuration": null,
+    "kernel_command_line": null,
+    "device_driver_versions": {}
+  },
+  "user_software": {
+    "middleware": null,
+    "ros_distribution": null,
+    "package_versions_or_commits": {},
+    "rmw_implementation": null,
+    "dds_or_transport_version": null,
+    "compiler_version": null,
+    "compiler_options": null,
+    "runtime_library_versions": {},
+    "cuda_version": null,
+    "tensorrt_version": null
+  },
+  "deployment": {
+    "mode": null,
+    "container_image_digest": null,
+    "container_runtime_version": null,
+    "network_mode": null,
+    "ipc_mode": null,
+    "device_access_configuration": null,
+    "cgroup_version": null,
+    "cpu_quota_and_period": null,
+    "cpuset": null,
+    "memory_and_swap_limits": null
+  },
+  "scheduling": {
+    "thread_roles_policies_and_priorities": [],
+    "thread_cpu_affinity": null,
+    "irq_affinity": null,
+    "cpu_isolation_configuration": null
+  },
+  "power_and_thermal": {
+    "power_mode_id_and_name": null,
+    "power_mode_configuration": null,
+    "frequency_policy": null,
+    "fan_and_cooling_configuration": null,
+    "ambient_conditions": null
+  },
+  "measurement": {
+    "user_event_clock": null,
+    "kernel_trace_clock": null,
+    "clock_alignment_method_and_error_ns": null,
+    "tool_versions": {},
+    "available_features": [],
+    "unavailable_features_and_reasons": [],
+    "trace_permissions_and_scope": null
+  },
+  "evidence_paths": [],
+  "notes": []
+}

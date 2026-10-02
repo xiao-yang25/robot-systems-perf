@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "purpose": "portable_smoke_validation_not_platform_acceptance",
+  "warmup_seconds": 1,
+  "measurement_seconds": 5,
+  "repetitions": 2,
+  "drain_seconds": 1,
+  "resource_sampling_seconds": 1,
+  "scenarios": [
+    {
+      "id": "C01",
+      "frequency_hz": 100,
+      "payload_bytes": 4096,
+      "qos_depth": 64,
+      "reliability": "reliable",
+      "callback_delay_us": 0,
+      "deadline_us": null,
+      "cpu_interference_workers": 0
+    },
+    {
+      "id": "S01",
+      "frequency_hz": 100,
+      "work_us": 0,
+      "deadline_us": 10000,
+      "cpu_interference_workers": 0
+    }
+  ]
+}

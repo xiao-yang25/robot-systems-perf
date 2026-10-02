@@ -1,0 +1,6 @@
+.git
+build
+results
+__pycache__
+*.bundle
+.DS_Store

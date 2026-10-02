@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "purpose": "platform_exploration_requirements_must_be_confirmed",
+  "warmup_seconds": 30,
+  "measurement_seconds": 120,
+  "repetitions": 5,
+  "drain_seconds": 3,
+  "resource_sampling_seconds": 1,
+  "scenarios": [
+    {
+      "id": "C01",
+      "frequency_hz": 100,
+      "payload_bytes": 4096,
+      "qos_depth": 64,
+      "reliability": "reliable",
+      "callback_delay_us": 0,
+      "deadline_us": null,
+      "cpu_interference_workers": 0
+    },
+    {
+      "id": "S01",
+      "frequency_hz": 1000,
+      "work_us": 50,
+      "deadline_us": 1000,
+      "cpu_interference_workers": 0
+    }
+  ]
+}
