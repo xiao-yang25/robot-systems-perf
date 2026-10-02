@@ -1,4 +1,6 @@
-# 具身中间件与系统性能工具
+# robot-systems-perf
+
+面向具身机器人的中间件与系统软件性能测量、分析和优化工具。目录名与计划中的 GitHub 仓库名统一为 `robot-systems-perf`；范围覆盖通信、调度和系统资源，后续可扩展到业务链路，不绑定某一款 Jetson 或 ROS 版本。
 
 本仓库用于先验证测量工具，再在 Jetson Orin 与 Thor 上建立独立性能基线。首版提供真实 ROS 2 跨进程通信 C01 和 Linux 周期任务 S01，记录原始数据、环境、逐轮指标及报告。总路线见 [性能分析规划](PERFORMANCE_PLAN.md)。
 
@@ -93,23 +95,42 @@ docker run --rm --init embodied-perf:local python3 tests/integration_checks.py
 
 每个场景的 `cpu_interference_workers` 可设置受控 CPU 干扰。C01 的 `callback_delay_us` 可用于验证慢消费者与积压分析；这是被明确注入的等待，不是系统根因。更改配置后保存为新文件，在新目录执行。
 
-## 克隆与离线迁移
+## GitHub 仓库与克隆
 
-远程仓库地址确定后使用该地址克隆；源码不包含实测结果。没有远程仓库时可从已提交的本地 Git 仓库生成离线包：
+当前工程独立放在 `tools/robot-systems-perf/`，Git 历史随工程保存在该目录。其他工具可以放到 `tools/` 下的同级目录，各自维护仓库。
+
+后续在 GitHub 创建名为 `robot-systems-perf` 的空仓库，选择需要的可见性，再在本地工程目录执行以下命令。将 `YOUR_ACCOUNT` 替换为自己的 GitHub 账号；以下命令是后续操作说明，当前未创建或推送云端仓库。
 
 ```bash
-git bundle create embodied-perf.bundle --all
+git remote add origin git@github.com:YOUR_ACCOUNT/robot-systems-perf.git
+git push -u origin main
+```
+
+在另一台机器或 Orin/Thor 上：
+
+```bash
+git clone git@github.com:YOUR_ACCOUNT/robot-systems-perf.git
+cd robot-systems-perf
+./scripts/run-docker.sh configs/smoke.json results/smoke
+```
+
+## 离线迁移
+
+没有远程仓库时可从已提交的本地 Git 仓库生成离线包：
+
+```bash
+git bundle create robot-systems-perf.bundle --all
 ```
 
 把 bundle 传到另一台机器后：
 
 ```bash
-git clone embodied-perf.bundle embodied-perf
-cd embodied-perf
+git clone robot-systems-perf.bundle robot-systems-perf
+cd robot-systems-perf
 ./scripts/run-docker.sh configs/smoke.json results/smoke
 ```
 
-该包只包含 Git 已提交内容，不包含 Docker 镜像与结果。离线设备还需单独准备对应架构的镜像。GitHub 等远程仓库仍需明确目标和可见性。
+该包只包含 Git 已提交内容，不包含 Docker 镜像与实测结果。离线设备还需单独准备对应架构的镜像。
 
 ## 实现与验证状态
 
