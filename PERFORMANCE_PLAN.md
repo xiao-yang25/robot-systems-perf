@@ -208,12 +208,40 @@ ROS 2 场景可评估 ros2_tracing 的埋点与追踪能力，并核对所用版
 
 ## 记录模板与结果管理
 
-本目录提供以下模板：
-
-- [平台环境模板](templates/platform-profile.template.json)：Orin 与 Thor 分别填写一份，null 表示尚未提供。
-- [实验定义模板](templates/experiment.template.json)：给出 C01 探索起点及待填写约束；当前仅是记录格式，尚无程序读取并执行它。
-- [实测与优化报告模板](templates/run-report.template.md)：记录逐轮统计、证据、结论和优化对照。
+使用 [平台环境模板](templates/platform-profile.template.json) 分别记录 Orin 与 Thor，null 表示尚未提供。可执行的实验配置见 [smoke](configs/smoke.json) 与 [baseline](configs/baseline.json)，按业务修改后保存新版本。程序自动生成逐轮统计与 REPORT.md；优化对照另记录基线/改动标识、单项变化、固定条件、执行顺序、波动、正确性及恢复方法。
 
 每次运行使用唯一标识；建议把实验定义、环境快照、原始事件、资源采样、工具版本、统计及报告放在同一运行目录。运行标识与采集时间用于追溯，不替代软件及配置版本。多轮结果关联实验标识；配置改变后建立新的实验版本。
 
 关键待填写项包括具体模组与 BSP、首个中间件/RMW、生产部署配置、业务链路边界、时限及数据年龄要求、可用推理负载、采集能力与开销预算。它们未齐全时仍可实现统计和合成负载，但不能完成目标平台与业务验收。
+
+
+## 首版运行口径与扩展用法
+
+C01 与 S01 保留计划释放时刻，落后时逐条追赶，不静默跳过。热路径事件暂存于预留内存，结束后写 CSV。C01 回调包含完整载荷校验；发布到回调时延包含中间件、传输和派发，不能解释为纯网络延迟。有限排空后仍未交付的任务记为缺失，不能直接归因为网络丢包。
+
+业务截止期以计划释放时间为锚；发送结束后的排空等待至少覆盖一个截止期长度，实际值记入 resolved.json。未设置截止期时不判断业务达标。逐轮分位数不取平均；延迟仅表示已完成样本的条件分布，缺失、无效和重复另列。
+
+S01 的 work_us 是按 CLOCK_MONOTONIC 计时的忙等墙钟持续时间，被抢占时实际 CPU 时间可能减少，应结合 cpu_time_ns 分析。它不是固定 CPU 时间预算；启动偏差与周期误差也不等于内核 runnable wait。C01 的 callback_delay_us 是人为注入的等待，cpu_interference_workers 为受控 CPU 干扰，更改后必须保存新配置与结果。
+
+默认同容器的两个进程通过 localhost discovery 通信，网络为 bridge、IPC 为 private。需要生产环境对照时显式设置 DOCKER_NETWORK 与 DOCKER_IPC，保存实际部署约束。未暴露的温度、功耗、BSP 或内部队列信息为不可用，不能填零。
+
+切换兼容的 ROS 用户态镜像时，通过 BASE_IMAGE 与 IMAGE 指定，例如：
+
+```bash
+BASE_IMAGE=ros:jazzy-ros-base-noble IMAGE=embodied-perf:jazzy \
+  ./scripts/run-docker.sh configs/smoke.json results/jazzy-smoke
+```
+
+Humble 为已验证目标，其他发行版必须重新构建与实测。镜像标签可变，每次保存基础镜像及构建镜像 ID、包版本和源码摘要；用户态镜像不会改变宿主内核。
+
+在已安装相应 ROS 2、C++ 编译器、CMake 和 Python 3.10 或更新版本的 Linux 设备上，可原生运行：
+
+```bash
+source /opt/ros/humble/setup.bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2
+EP_ENVIRONMENT_KIND=jetson-native python3 -m perfkit.runner \
+  --config configs/smoke.json --output results/native-smoke
+```
+
+原生部署尚未验证，需先核对平台支持组合，再建立独立结果。需要离线迁移时可使用 git bundle；包仅包含已提交源码，镜像与实测结果需单独准备。
