@@ -53,6 +53,32 @@ def main():
         assert (output / 'run-status.json').read_bytes() == original_status
         print('PASS: existing evidence directory is not overwritten')
 
+        cfg = config_file(root, 'minimal.json')
+        minimal = json.loads(cfg.read_text()); minimal['sampling_mode'] = 'minimal'
+        cfg.write_text(json.dumps(minimal))
+        output = root / 'minimal-run'
+        subprocess.run(command(cfg, output), cwd=ROOT, check=True, timeout=30)
+        summary = json.loads((output / 'summary.json').read_text())['results'][0]
+        assert not (output / 'resources.jsonl').exists()
+        assert summary['resources']['available'] is False
+        assert summary['metrics']['counts']['measured_sent'] == 5
+        assert summary['metrics']['distributions']['release_lateness_ns']['n'] == 5
+        print('PASS: minimal mode retains events and disables the resource sampler')
+
+        cfg = config_file(root, 'sampler-failure.json', cpu_interference_workers=1)
+        output = root / 'sampler-failure-run'
+        code = ('import sys; from perfkit.resources import ResourceSampler; '
+                'from perfkit.runner import main; '
+                'ResourceSampler._snapshot=lambda self: (_ for _ in ()).throw(OSError("injected sampler failure")); '
+                'sys.argv=["runner","--config",sys.argv[1],"--output",sys.argv[2]]; main()')
+        failed = subprocess.run([sys.executable, '-c', code, str(cfg), str(output)],
+                                cwd=ROOT, capture_output=True, timeout=30)
+        assert failed.returncode != 0
+        status = json.loads((output / 'run-status.json').read_text())
+        assert status['status'] == 'failed' and 'injected sampler failure' in status['resource_sampler_error']
+        assert not (output / 'summary.json').exists()
+        print('PASS: sampler failure is nonzero and preserves failure evidence')
+
         cfg = config_file(root, 'interrupt.json', cpu_interference_workers=1)
         config = json.loads(cfg.read_text()); config['measurement_seconds'] = 30
         cfg.write_text(json.dumps(config))
@@ -81,6 +107,37 @@ def main():
             finally:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL); process.wait()
+                for pid in children:
+                    try: os.killpg(int(pid), signal.SIGKILL)
+                    except ProcessLookupError: pass
+
+        suite = json.loads((ROOT / 'configs/suite-smoke.json').read_text())
+        suite['cases'] = [next(c for c in suite['cases'] if c['name'] == 'c01-cpu-interference')]
+        suite['sampler_comparisons'] = []
+        suite['defaults']['measurement_seconds'] = 30
+        cfg = root / 'suite-interrupt.json'; cfg.write_text(json.dumps(suite))
+        output = root / 'suite-interrupt-run'
+        with (root / 'suite-interrupted.log').open('w') as log:
+            process = subprocess.Popen([sys.executable, '-m', 'perfkit.suite', '--config', str(cfg),
+                                        '--output', str(output)], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+            children = []
+            try:
+                until = time.monotonic() + 15
+                while time.monotonic() < until:
+                    path = Path(f'/proc/{process.pid}/task/{process.pid}/children')
+                    children = path.read_text().split() if path.exists() else []
+                    if len(children) >= 3: break
+                    if process.poll() is not None: raise RuntimeError('suite exited before interruption')
+                    time.sleep(0.02)
+                else: raise RuntimeError('suite did not start all children')
+                process.send_signal(signal.SIGTERM)
+                assert process.wait(timeout=15) != 0
+                assert json.loads((output / 'suite-status.json').read_text())['status'] == 'failed'
+                assert json.loads((output / 'c01-cpu-interference/run-status.json').read_text())['status'] == 'failed'
+                assert all(not Path(f'/proc/{pid}').exists() for pid in children)
+                print('PASS: suite interruption preserves both statuses and reaps all owned children')
+            finally:
+                if process.poll() is None: process.kill(); process.wait()
                 for pid in children:
                     try: os.killpg(int(pid), signal.SIGKILL)
                     except ProcessLookupError: pass

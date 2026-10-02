@@ -1,0 +1,213 @@
+{
+  "format_version": 1,
+  "purpose": "suite_smoke_not_platform_acceptance",
+  "defaults": {
+    "format_version": 1,
+    "purpose": "platform_exploration_requirements_must_be_confirmed",
+    "warmup_seconds": 0.5,
+    "measurement_seconds": 3,
+    "repetitions": 1,
+    "drain_seconds": 0.5,
+    "resource_sampling_seconds": 0.2,
+    "quality_limits": {
+      "min_samples": 1000,
+      "max_release_late_fraction": 0.01
+    }
+  },
+  "cases": [
+    {
+      "name": "c01-reference",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ]
+    },
+    {
+      "name": "c01-large-payload",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 30,
+          "payload_bytes": 1048576,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ]
+    },
+    {
+      "name": "c01-high-rate",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 500,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ]
+    },
+    {
+      "name": "c01-best-effort",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 8,
+          "reliability": "best_effort",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ]
+    },
+    {
+      "name": "c01-slow-consumer",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 8,
+          "reliability": "reliable",
+          "callback_delay_us": 15000,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ]
+    },
+    {
+      "name": "c01-cpu-interference",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 1
+        }
+      ]
+    },
+    {
+      "name": "s01-reference",
+      "scenarios": [
+        {
+          "id": "S01",
+          "frequency_hz": 1000,
+          "work_us": 50,
+          "deadline_us": 1000,
+          "cpu_interference_workers": 0
+        }
+      ]
+    },
+    {
+      "name": "s01-cpu-interference",
+      "scenarios": [
+        {
+          "id": "S01",
+          "frequency_hz": 1000,
+          "work_us": 50,
+          "deadline_us": 1000,
+          "cpu_interference_workers": 1
+        }
+      ]
+    },
+    {
+      "name": "sampler-min-a",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ],
+      "sampling_mode": "minimal",
+      "repetitions": 1
+    },
+    {
+      "name": "sampler-basic-a",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ],
+      "sampling_mode": "basic",
+      "repetitions": 1
+    },
+    {
+      "name": "sampler-basic-b",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ],
+      "sampling_mode": "basic",
+      "repetitions": 1
+    },
+    {
+      "name": "sampler-min-b",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0
+        }
+      ],
+      "sampling_mode": "minimal",
+      "repetitions": 1
+    }
+  ],
+  "sampler_comparisons": [
+    {
+      "name": "c01-resource-sampler",
+      "abba_cases": [
+        "sampler-min-a",
+        "sampler-basic-a",
+        "sampler-basic-b",
+        "sampler-min-b"
+      ],
+      "max_p99_increase_percent": null
+    }
+  ]
+}

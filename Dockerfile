@@ -11,5 +11,6 @@ RUN /bin/bash -c 'source /opt/ros/${ROS_DISTRO}/setup.bash && cmake -S . -B buil
 COPY perfkit ./perfkit
 COPY tests ./tests
 COPY configs ./configs
+COPY scripts ./scripts
 COPY Dockerfile ./Dockerfile
 CMD ["python3", "-m", "perfkit.runner", "--config", "configs/smoke.json", "--output", "/results/run"]

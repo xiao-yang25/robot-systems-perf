@@ -9,9 +9,11 @@ from pathlib import Path
 import platform
 import signal
 import subprocess
-import threading
+import csv
+from contextlib import nullcontext
 import time
 import uuid
+from .lifecycle import defer_interrupts
 
 
 def read_optional(path):
@@ -45,6 +47,14 @@ def validate(config):
     number(config['repetitions'], 'repetitions', 1, 100, integer=True)
     number(config['drain_seconds'], 'drain_seconds', 0.01, 60)
     number(config['resource_sampling_seconds'], 'resource_sampling_seconds', 0.1, 60)
+    if config.get('sampling_mode', 'basic') not in ('basic', 'minimal'):
+        raise ValueError('sampling_mode must be basic or minimal')
+    for key in ('min_samples',):
+        if key in config.get('quality_limits', {}):
+            number(config['quality_limits'][key], key, 2, 1000000, integer=True)
+    for key in ('max_release_late_fraction',):
+        if key in config.get('quality_limits', {}):
+            number(config['quality_limits'][key], key, 0, 1)
     if not isinstance(config.get('scenarios'), list) or not config['scenarios']:
         raise ValueError('at least one scenario required')
     seen = set()
@@ -64,6 +74,8 @@ def validate(config):
             number(s['payload_bytes'], 'payload_bytes', 0, 16777216, integer=True)
             number(s['qos_depth'], 'qos_depth', 1, 100000, integer=True)
             number(s['callback_delay_us'], 'callback_delay_us', 0, 1000000, integer=True)
+            if s.get('max_data_age_us') is not None:
+                number(s['max_data_age_us'], 'max_data_age_us', 0, 1000000, integer=True)
             if s['reliability'] not in ('reliable', 'best_effort'):
                 raise ValueError('unsupported reliability')
         else:
@@ -75,7 +87,7 @@ def environment(root):
     packages = command_optional(['dpkg-query', '-W', '-f=${Package}=${Version}\n',
                                  'ros-*-rclcpp', 'ros-*-rmw*', 'ros-*-std-msgs'])
     source_files = list((root / 'src').glob('*')) + list((root / 'perfkit').glob('*.py'))
-    source_files += [root / 'CMakeLists.txt', root / 'Dockerfile']
+    source_files += list((root / 'scripts').glob('*.sh')) + [root / 'CMakeLists.txt', root / 'Dockerfile']
     manifest = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in source_files if p.is_file()}
     return {
@@ -106,50 +118,16 @@ def environment(root):
         'cgroup': {name: read_optional('/sys/fs/cgroup/' + name) for name in
                    ('cpu.max', 'cpu.stat', 'cpuset.cpus.effective', 'memory.max', 'memory.current')},
         'kernel_schedstat': read_optional('/proc/sys/kernel/sched_schedstats'),
+        'host_profile': json.loads(Path(os.environ['EP_HOST_PROFILE']).read_text()) if os.environ.get('EP_HOST_PROFILE') else None,
         'compiler': command_optional(['c++', '--version']),
         'power_mode_readonly': command_optional(['nvpmodel', '-q']),
         'limitations': [
             'Not a cross-host or GPU benchmark; C01 includes middleware plus callback dispatch.',
-            'Kernel runnable-wait, executor-ready-wait and internal queue latency are not instrumented.',
+            'Per-thread schedstat counters are sampled when available; per-event scheduler/executor/queue waits are not traced.',
             'CPU usage and timing are observed in the executing Linux environment, possibly a VM.',
             'Container views may not expose the host BSP, power mode or device statistics.'
         ]
     }
-
-
-class Sampler:
-    def __init__(self, output, interval):
-        self.output, self.interval = output, interval
-        self.stop_event = threading.Event()
-        self.thread = threading.Thread(target=self.run, name='resource-sampler')
-        self.error = None
-
-    def run(self):
-        try:
-            with self.output.open('x') as f:
-                while not self.stop_event.is_set():
-                    record = {
-                        'monotonic_ns': time.monotonic_ns(),
-                        'proc_stat': read_optional('/proc/stat'),
-                        'meminfo': read_optional('/proc/meminfo'),
-                        'loadavg': read_optional('/proc/loadavg'),
-                        'cgroup_cpu_stat': read_optional('/sys/fs/cgroup/cpu.stat'),
-                        'temperatures': {str(p.parent.name): read_optional(p) for p in
-                                         Path('/sys/class/thermal').glob('thermal_zone*/temp')},
-                        'cpu_frequency_khz': {str(p.parent.parent.name): read_optional(p) for p in
-                                              Path('/sys/devices/system/cpu').glob('cpu*/cpufreq/scaling_cur_freq')}
-                    }
-                    f.write(json.dumps(record) + '\n'); f.flush()
-                    self.stop_event.wait(self.interval)
-        except Exception as exc:
-            self.error = str(exc)
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, *args):
-        self.stop_event.set(); self.thread.join()
 
 
 def start(command, log, env=None):
@@ -172,7 +150,7 @@ def stop(proc, graceful=signal.SIGTERM):
             raise RuntimeError('process did not stop gracefully')
 
 
-def run_one(root, folder, config, scenario):
+def run_one(root, folder, config, scenario, sampler=None):
     from .analysis import analyze_c01, analyze_s01
     folder.mkdir(parents=True)
     hz = scenario['frequency_hz']
@@ -198,32 +176,38 @@ def run_one(root, folder, config, scenario):
     }, indent=2) + '\n')
     processes = []
     loads = []
+    def launch(command, log, env=None, role='benchmark'):
+        proc = start(command, log, env)
+        processes.append(proc)
+        if sampler is not None:
+            sampler.register(proc.pid, role)
+        return proc
     try:
         for i in range(scenario.get('cpu_interference_workers', 0)):
-            load = start([root / 'build/periodic_bench', '--load', 'cpu'], folder / f'load-{i}.log')
-            loads.append(load); processes.append(load)
+            load = launch([root / 'build/periodic_bench', '--load', 'cpu'], folder / f'load-{i}.log', role=f'cpu-load-{i}')
+            loads.append(load)
         timeout = config['warmup_seconds'] + config['measurement_seconds'] + 30
         if scenario['id'] == 'C01':
             topic = '/embodied_perf/run_' + uuid.uuid4().hex
             shared = common + ['--topic', topic, '--payload-bytes', scenario['payload_bytes'],
                                '--depth', scenario['qos_depth'], '--reliability', scenario['reliability']]
-            subscriber = start([root / 'build/ros_bench', '--role', 'subscriber', *shared,
+            subscriber = launch([root / 'build/ros_bench', '--role', 'subscriber', *shared,
                                 '--callback-delay-ns', scenario['callback_delay_us'] * 1000,
                                 '--ready-file', folder / 'ready', '--output', folder / 'receiver.csv'],
-                               folder / 'subscriber.log', child_env)
-            processes.append(subscriber)
+                               folder / 'subscriber.log', child_env, role='subscriber')
             ready_end = time.monotonic() + 15
             while not (folder / 'ready').exists():
                 if subscriber.poll() is not None or time.monotonic() >= ready_end:
                     raise RuntimeError('subscriber startup failed; see subscriber.log')
                 time.sleep(0.02)
-            publisher = start([root / 'build/ros_bench', '--role', 'publisher', *shared,
-                               '--output', folder / 'sender.csv'], folder / 'publisher.log', child_env)
-            processes.append(publisher)
+            publisher = launch([root / 'build/ros_bench', '--role', 'publisher', *shared,
+                               '--output', folder / 'sender.csv'], folder / 'publisher.log', child_env, role='publisher')
             if publisher.wait(timeout=timeout) != 0:
                 raise RuntimeError('publisher failed; see publisher.log')
             # After publishing ends, this guarantees even the latest planned
             # deadline has passed before missing tasks count as violations.
+            if sampler is not None:
+                sampler.set_window(scenario['id'], int(folder.name), 'drain')
             drain_end = time.monotonic() + effective_drain
             while time.monotonic() < drain_end:
                 if subscriber.poll() is not None:
@@ -232,13 +216,14 @@ def run_one(root, folder, config, scenario):
             stop(subscriber, signal.SIGINT)
             if subscriber.returncode != 0:
                 raise RuntimeError('subscriber failed during shutdown; see subscriber.log')
-            metrics = analyze_c01(folder / 'sender.csv', folder / 'receiver.csv', deadline)
+            metrics = analyze_c01(folder / 'sender.csv', folder / 'receiver.csv', deadline,
+                                  payload_bytes=scenario['payload_bytes'],
+                                  max_data_age_ns=scenario['max_data_age_us'] * 1000 if scenario.get('max_data_age_us') is not None else None)
             if metrics['counts']['measured_sent'] != count or metrics['counts']['warmup_sent'] != warmup:
                 raise RuntimeError('publisher manifest does not match planned sample count')
         else:
-            proc = start([root / 'build/periodic_bench', *common, '--work-ns', scenario['work_us'] * 1000,
-                          '--output', folder / 'samples.csv'], folder / 'periodic.log')
-            processes.append(proc)
+            proc = launch([root / 'build/periodic_bench', *common, '--work-ns', scenario['work_us'] * 1000,
+                          '--output', folder / 'samples.csv'], folder / 'periodic.log', role='periodic-worker')
             if proc.wait(timeout=timeout) != 0:
                 raise RuntimeError('periodic test failed; see periodic.log')
             metrics = analyze_s01(folder / 'samples.csv', deadline)
@@ -249,13 +234,104 @@ def run_one(root, folder, config, scenario):
         return metrics
     finally:
         errors = []
-        for proc in reversed(processes):
-            try:
-                stop(proc)
-            except Exception as exc:
-                errors.append(str(exc))
+        with defer_interrupts():
+            for proc in reversed(processes):
+                try:
+                    stop(proc)
+                except Exception as exc:
+                    errors.append(str(exc))
+                finally:
+                    if sampler is not None:
+                        sampler.unregister(proc.pid)
         if errors:
             raise RuntimeError('cleanup failed: ' + '; '.join(errors))
+
+
+
+def measurement_quality(metrics, folder, config, scenario):
+    filename = 'sender.csv' if scenario['id'] == 'C01' else 'samples.csv'
+    field = 'generated_ns' if scenario['id'] == 'C01' else 'start_ns'
+    with (folder / filename).open() as stream:
+        rows = [row for row in csv.DictReader(stream) if row['measured'] == '1']
+    period = round(1000000000 / scenario['frequency_hz'])
+    missed = sum(int(row[field]) - int(row['scheduled_ns']) > period for row in rows)
+    fraction = missed / len(rows) if rows else None
+    limits = config.get('quality_limits', {})
+    warnings = []
+    if len(rows) < limits.get('min_samples', 1000):
+        warnings.append('Short sample population; tail estimates are exploratory.')
+    if 'max_release_late_fraction' in limits and fraction is not None and fraction > limits['max_release_late_fraction']:
+        warnings.append('Configured release-lateness limit exceeded; planned input was not maintained.')
+    if scenario.get('deadline_us') is None:
+        warnings.append('Business deadline not configured; no real-time acceptance verdict.')
+    if config.get('sampling_mode', 'basic') == 'minimal':
+        warnings.append('Resource sampler disabled; timestamp instrumentation remains enabled.')
+    return {'status': 'review_required' if warnings else 'measurement_complete',
+            'business_acceptance': 'not_evaluated_by_quality_check',
+            'release_late_more_than_one_period': missed, 'release_late_fraction': fraction,
+            'limits': limits, 'sampling_mode': config.get('sampling_mode', 'basic'),
+            'warnings': warnings,
+            'unobserved': ['middleware/executor queue wait', 'per-event kernel dispatch wait',
+                           'full instrumentation overhead', 'robot business chain and GPU interference']}
+
+
+def run_experiment(config, output, root=None):
+    from .resources import ResourceSampler, summarize_resources
+    root = Path(root) if root is not None else Path(__file__).resolve().parent.parent
+    config = validate(config)
+    output = Path(output)
+    for name in ('ros_bench', 'periodic_bench'):
+        if not (root / 'build' / name).is_file():
+            raise RuntimeError('benchmark binary missing; build with CMake or use Docker')
+    output.mkdir(parents=True, exist_ok=False)
+    status = {'status': 'running', 'completed_runs': 0, 'error': None}
+    results = []
+    sampler = None
+    try:
+        (output / 'config.json').write_text(json.dumps(config, indent=2) + '\n')
+        env = environment(root)
+        (output / 'environment.json').write_text(json.dumps(env, indent=2) + '\n')
+        if config.get('sampling_mode', 'basic') == 'basic':
+            sampler = ResourceSampler(output / 'resources.jsonl', config['resource_sampling_seconds'])
+        with sampler if sampler is not None else nullcontext():
+            for scenario in config['scenarios']:
+                for rep in range(1, config['repetitions'] + 1):
+                    folder = output / scenario['id'] / f'{rep:03}'
+                    if sampler is not None:
+                        sampler.set_window(scenario['id'], rep, 'active_including_warmup')
+                    metrics = run_one(root, folder, config, scenario, sampler)
+                    if sampler is not None:
+                        sampler.set_window(scenario['id'], rep, 'analysis')
+                    results.append({'scenario': scenario['id'], 'repetition': rep, 'metrics': metrics,
+                                    'quality': measurement_quality(metrics, folder, config, scenario),
+                                    'raw_directory': str(folder.relative_to(output))})
+                    status['completed_runs'] += 1
+                    print(f"Completed {scenario['id']} repetition {rep}", flush=True)
+        if sampler is not None and sampler.error:
+            raise RuntimeError('resource sampling failed: ' + sampler.error)
+        for result in results:
+            window = result['metrics']['measurement_window']
+            result['resources'] = (summarize_resources(output / 'resources.jsonl', window['start_ns'], window['end_ns'])
+                                   if sampler is not None and window['start_ns'] is not None and window['end_ns'] is not None
+                                   else {'available': False, 'reason': 'sampler disabled or measurement window unavailable'})
+        from .analysis import write_report
+        write_report(output, config, env, results)
+        status['status'] = 'complete'
+        print(f'Report: {output / "REPORT.md"}', flush=True)
+        return {'config': config, 'environment': env, 'results': results}
+    except BaseException as exc:
+        status['status'] = 'failed'; status['error'] = str(exc)
+        status['error_type'] = type(exc).__name__
+        raise
+    finally:
+        status['resource_sampler_error'] = sampler.error if sampler is not None else None
+        (output / 'run-status.json').write_text(json.dumps(status, indent=2) + '\n')
+
+
+def install_signal_handler():
+    def terminate(signum, frame):
+        raise KeyboardInterrupt(f'interrupted by signal {signum}')
+    signal.signal(signal.SIGTERM, terminate)
 
 
 def main():
@@ -263,45 +339,8 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    def terminate(signum, frame):
-        raise KeyboardInterrupt(f'interrupted by signal {signum}')
-    signal.signal(signal.SIGTERM, terminate)
-    root = Path(__file__).resolve().parent.parent
-    config = validate(json.loads(args.config.read_text()))
-    for name in ('ros_bench', 'periodic_bench'):
-        if not (root / 'build' / name).is_file():
-            raise RuntimeError('benchmark binary missing; build with CMake or use Docker')
-    args.output.mkdir(parents=True, exist_ok=False)
-    status = {'status': 'running', 'completed_runs': 0, 'error': None}
-    results = []
-    sampler = None
-    try:
-        (args.output / 'config.json').write_text(json.dumps(config, indent=2) + '\n')
-        env = environment(root)
-        (args.output / 'environment.json').write_text(json.dumps(env, indent=2) + '\n')
-        sampler = Sampler(args.output / 'resources.jsonl', config['resource_sampling_seconds'])
-        with sampler:
-            for scenario in config['scenarios']:
-                for rep in range(1, config['repetitions'] + 1):
-                    folder = args.output / scenario['id'] / f'{rep:03}'
-                    metrics = run_one(root, folder, config, scenario)
-                    results.append({'scenario': scenario['id'], 'repetition': rep, 'metrics': metrics,
-                                    'raw_directory': str(folder.relative_to(args.output))})
-                    status['completed_runs'] += 1
-                    print(f"Completed {scenario['id']} repetition {rep}", flush=True)
-        if sampler.error:
-            raise RuntimeError('resource sampling failed: ' + sampler.error)
-        from .analysis import write_report
-        write_report(args.output, config, env, results)
-        status['status'] = 'complete'
-        print(f'Report: {args.output / "REPORT.md"}', flush=True)
-    except BaseException as exc:
-        status['status'] = 'failed'; status['error'] = str(exc)
-        status['error_type'] = type(exc).__name__
-        raise
-    finally:
-        status['resource_sampler_error'] = sampler.error if sampler is not None else None
-        (args.output / 'run-status.json').write_text(json.dumps(status, indent=2) + '\n')
+    install_signal_handler()
+    run_experiment(json.loads(args.config.read_text()), args.output)
 
 
 if __name__ == '__main__':
