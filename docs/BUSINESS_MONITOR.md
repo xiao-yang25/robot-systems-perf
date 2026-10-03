@@ -119,6 +119,8 @@ sudo "$HOME/.venvs/robot-systems-perf/bin/robot-perf-monitor" --require-jetson -
 - `resources.jsonl`：原始系统、目标进程/线程与 cgroup 快照。
 - `monitor-config.json`、`environment.json`、`monitor-status.json`：实际配置、宿主/源码/namespace与运行状态。
 
+采集后保留完整结果目录，并附目标业务、软件栈、负载、运行条件和问题说明。文件清单、可填写模板与打包示例见 [设备测试指南：采集后提供的材料](JETSON_RUNBOOK.md#采集后提供的材料)。
+
 目标只在身份可验证、可读且仍满足过滤范围时保留，空闲不会单独导致摘除。死亡、不可验证或移出范围时移除；新 PID 或复用 PID 按新的启动时间独立登记，计数器不跨身份做差分。未成功登记的身份竞态记入发现记录。线程随每次资源采样重新枚举；瞬时进程/线程可能漏掉。
 
 资源汇总窗口由采集器的 CLOCK_MONOTONIC 定义，只使用完整落在窗口内的快照，不外推边界。资源峰值是采样峰值，进程 CPU 以单核=100%计，多线程进程可能超过100%。进程 CPU 包含全部线程，而进程 schedstat/上下文切换是主线程；线程行分别展示，不要重复求和 RSS 或进程与线程 CPU。
