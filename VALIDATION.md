@@ -1,5 +1,19 @@
 # 验证记录
 
+## 现有业务进程自动采集验证
+
+新增独立 monitor 入口，用于宿主 ROS 2 节点/组件容器的进程和线程资源观察。活动筛选只是候选发现；没有自动识别算法语义或生成业务消息时延。目标 Orin/Thor 仍未连接，验证环境继续为原生 ARM64 Docker Desktop Linux VM。
+
+- 82 项单元测试在宿主 Python 与 Linux ROS 容器通过，包含发现范围、可读性、UID、PID复用、累计 CPU 算术、动态注册身份固定及既有统计兼容。
+- 真实外部进程检查通过：活动候选、名称纳入空闲对象、运行中新进程、死亡和新PID重启、多线程名称/TID采集；测试进程命令行中的标记未出现在任何报告文件。
+- SIGTERM 使采集器退出130，保存 interrupted 原始证据与报告，被观察的业务样例保持存活。摘要生成、报告写入、最后状态写入期间的真实 SIGINT 回归验证终态一致。
+- 原有6项 ROS 集成检查继续通过；采样失败、业务发现失败与既有目录拒绝覆盖不被包装成成功。
+- 独立复审通过：两处取消终态边界已修正，受审源码摘要与Linux原始运行环境记录一致；复审核对实际进程/线程快照、筛选事件、覆盖与隐私检查结果。
+
+业务集成证据保留在忽略的 `results/business-monitor-verification`，原始stdout/stderr为 `results/business-monitor-final.log`；Linux单元与ROS集成最后输出分别保留在 `results/linux-unit-monitor-final-tail.txt`、`results/ros-integration-monitor-final-tail.txt`。开发验证时镜像源码版本标签为 development，实际运行源文件 SHA256 记录在各 environment.json 中，用于关联受审代码；原始证据不提交到仓库。
+
+尚未验证真实ROS组件容器的线程命名与现场可读权限、跨用户/容器现场、Jetson传感器、低CPU或GPU等待业务的发现完整性及业务采集开销。此模式没有节点/回调级归因；使用者必须检查筛选依据、namespace、覆盖和遗漏，详见 [业务采集指南](docs/BUSINESS_MONITOR.md)。
+
 ## Jetson 测试入口与扩展指标验证
 
 本轮仍使用 Apple Silicon 上 Docker Desktop 的原生 ARM64 Linux VM，Ubuntu 22.04 / ROS 2 Humble / rmw_fastrtps_cpp。没有连接 Orin 或 Thor；以下结果验证构建、运行、统计与故障处理，不是目标设备性能基线。

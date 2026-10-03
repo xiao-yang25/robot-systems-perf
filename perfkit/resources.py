@@ -171,11 +171,14 @@ class ResourceSampler:
     identity even if the same operating-system process remains alive.
     """
 
-    def __init__(self, output: Path, interval: float):
+    def __init__(self, output: Path, interval: float, window_source='CSV_monotonic_timestamps'):
         if not math.isfinite(interval) or interval <= 0:
             raise ValueError('resource sampling interval must be positive and finite')
         self.output = Path(output)
         self.interval = interval
+        if window_source not in ('CSV_monotonic_timestamps', 'monitor_monotonic_timestamps'):
+            raise ValueError('unsupported resource window source')
+        self.window_source = window_source
         self.error = None
         self._lock = threading.Lock()
         self._registered = {}
@@ -187,17 +190,21 @@ class ResourceSampler:
         self._page_size = _sysconf('SC_PAGE_SIZE')
         self._clock_ticks = _sysconf('SC_CLK_TCK')
 
-    def register(self, pid, role):
+    def register(self, pid, role, expected_starttime_ticks=None):
         pid = int(pid)
         if pid <= 0:
             raise ValueError('PID must be positive')
         stat, reason = _read(PROC_ROOT / str(pid) / 'stat', parse_task_stat)
+        if expected_starttime_ticks is not None and (
+                stat is None or stat['starttime_ticks'] != expected_starttime_ticks):
+            return False
         with self._lock:
             self._serial += 1
             self._registered[pid] = {'pid': pid, 'role': str(role),
                                      'registration_id': self._serial,
                                      'starttime_ticks': stat['starttime_ticks'] if stat else None,
                                      'identity_reason': reason}
+        return True
 
     def unregister(self, pid):
         with self._lock:
@@ -332,7 +339,7 @@ class ResourceSampler:
         system = self._system()
         return {'schema_version': 1, 'monotonic_ns': started,
                 'sample_end_ns': time.monotonic_ns(), 'window': window,
-                'window_semantics': 'tags_only; measurement_window_uses_CSV_monotonic_timestamps',
+                'window_semantics': 'tags_only; measurement_window_uses_' + self.window_source,
                 'clock_ticks_per_second': self._clock_ticks, 'page_size_bytes': self._page_size,
                 'system': system, 'processes': processes, 'cgroups': cgroups,
                 'sampler_cgroup': own_cgroup, 'sampler_cgroup_reason': own_reason}
@@ -564,7 +571,7 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
                 if stat['starttime_ticks'] != process.get('starttime_ticks'):
                     unavailable(base + '.stat', 'PID identity differs from registration')
                     continue
-                metadata = {'pid': process['pid'], 'role': process['role'],
+                metadata = {'pid': process['pid'], 'role': process['role'], 'comm': stat.get('comm'),
                             'registration_id': process['registration_id'],
                             'starttime_ticks': stat['starttime_ticks'], 'kind': 'process',
                             'cpu_scope': 'all_process_threads',
@@ -579,6 +586,7 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
                         continue
                     key = base + ':tid={}:start={}'.format(task['tid'], task['stat']['starttime_ticks'])
                     metadata = {'pid': process['pid'], 'tid': task['tid'], 'role': process['role'],
+                                'comm': task['stat'].get('comm'),
                                 'registration_id': process['registration_id'],
                                 'starttime_ticks': task['stat']['starttime_ticks'], 'kind': 'thread',
                                 'cpu_scope': 'thread', 'schedstat_and_context_switch_scope': 'thread',

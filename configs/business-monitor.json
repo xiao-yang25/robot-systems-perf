@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "duration_seconds": 60,
+  "resource_sampling_seconds": 0.5,
+  "discovery_interval_seconds": 1,
+  "include_names": ["^component_container.*$"],
+  "exclude_names": [],
+  "cgroup_patterns": [],
+  "pids": [],
+  "active_cpu_percent": 1,
+  "max_targets": 64,
+  "require_jetson": true
+}

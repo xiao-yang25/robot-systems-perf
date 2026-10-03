@@ -11,6 +11,7 @@
 | 诊断 | 分位数、直方图、时间分段、尾部消息编号、连续违约；可选数据年龄阈值 |
 | 资源 | 每核 CPU、进程/线程 CPU 与可用 schedstat、RSS、缺页、切换、cgroup 节流、温度/频率与可见功率传感器 |
 | 测试套件 | 参考点、大小载荷、高频、QoS、慢消费者、CPU 干扰及资源采集 ABBA 开销对照 |
+| 业务进程采集 | 自动发现现有活跃进程、按名称/PID纳入对象、动态线程与进程重启跟踪；输出资源而非消息时延 |
 
 保留原始 CSV、配置、环境、资源 JSONL 和逐轮报告；缺失能力标为不可用。内核等待是采样区间累计值，不能定位单次调度原因；内部队列、执行器就绪等待、GPU 推理干扰和真实机器人业务链路尚未实现。
 
@@ -50,6 +51,19 @@ REQUIRE_JETSON=1 ENVIRONMENT_KIND=jetson-native \
   ./scripts/run-native.sh configs/jetson-suite.json results/orin-native suite
 ```
 
+## 采集现有业务
+
+已运行的宿主 ROS 2 节点/组件容器可直接采集，无需重启业务或构建 C++：
+
+```bash
+python3 -m perfkit.monitor --config configs/business-monitor.json \
+  --output results/orin-business-001
+```
+
+默认发现当前用户 CPU 活跃候选，并按名称额外纳入 `component_container*`；记录纳入依据，持续采集进程和线程资源。算法语义、组件内部各节点/回调耗时需要另外关联。参数、其他用户与容器范围见 [业务采集指南](docs/BUSINESS_MONITOR.md)。
+
+读取业务结果目录的 `MONITOR_REPORT.md`、`monitor-summary.json` 和 `discovery.jsonl`；无目标或覆盖不足会提示复核。
+
 ## 结果与检查
 
 阅读套件目录下的 `SUITE_REPORT.md`，再查看每个 case 的 `REPORT.md` 和 `summary.json`。`suite-status.json` / `run-status.json` 的 complete 只表示采集成功；业务达标、输入质量和采集开销分别判断。失败退出非零并保留证据；结果不进入 Git。
@@ -58,6 +72,7 @@ REQUIRE_JETSON=1 ENVIRONMENT_KIND=jetson-native \
 python3 -m unittest discover -s tests -v
 bash -n scripts/run-docker.sh scripts/run-native.sh
 docker run --rm --init robot-systems-perf:local python3 tests/integration_checks.py
+docker run --rm --init robot-systems-perf:local python3 tests/integration_monitor.py
 ```
 
 Docker Desktop 的 Linux VM 结果不能作为 Jetson 基线。Orin/Thor 实机性能、AMD64 和其他 ROS 软件栈需要现场验证，具体执行证据见 [验证记录](VALIDATION.md)。

@@ -222,6 +222,19 @@ class ResourcesTest(unittest.TestCase):
             sampler.register(11, 'new-worker')
             self.assertEqual(sampler._snapshot()['processes'][0]['starttime_ticks'], 200)
 
+    def test_external_registration_pins_discovered_identity(self):
+        self.write('proc/11/stat', task_stat(start=200))
+        with patch.object(r, 'PROC_ROOT', self.root / 'proc'), patch.object(r, 'SYS_ROOT', self.root / 'sys'):
+            sampler = r.ResourceSampler(self.root / 'pin.jsonl', .1,
+                                        window_source='monitor_monotonic_timestamps')
+            self.assertFalse(sampler.register(11, 'external', expected_starttime_ticks=100))
+            self.assertEqual(sampler._snapshot()['processes'], [])
+            self.assertTrue(sampler.register(11, 'external', expected_starttime_ticks=200))
+            snapshot = sampler._snapshot()
+            self.assertIn('monitor_monotonic_timestamps', snapshot['window_semantics'])
+            self.write('proc/11/stat', task_stat(start=300))
+            self.assertIsNone(sampler._snapshot()['processes'][0]['stat'])
+
     def test_sysfs_optional_sources_and_no_gpu_name_guessing(self):
         self.write('sys/class/hwmon/hwmon0/power1_input', '1234000\n')
         self.write('sys/class/hwmon/hwmon0/power1_label', 'VDD_IN\n')

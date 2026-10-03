@@ -30,6 +30,21 @@ class PlatformTests(unittest.TestCase):
             profile = collect_profile(Path(directory))
             self.assertFalse(profile['checks']['jetson_detected'])
 
+    def test_monitor_profile_does_not_read_kernel_command_line(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch('perfkit.platform_probe.query', return_value={}):
+            from perfkit import platform_probe as p
+            original = p.optional
+            observed = []
+            def checked(path):
+                observed.append(str(path))
+                self.assertFalse(str(path).endswith('/proc/cmdline'))
+                return original(path)
+            with patch.object(p, 'optional', side_effect=checked):
+                profile = collect_profile(Path(directory), include_kernel_command_line=False)
+            self.assertIsNone(profile['kernel_command_line'])
+            self.assertTrue(observed)
+
     def test_require_jetson_preserves_failed_profile_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'host.json'

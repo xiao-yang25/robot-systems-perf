@@ -27,7 +27,7 @@ def query(argv):
         return {'available': False, 'value': None, 'reason': 'command unavailable or timed out'}
 
 
-def collect_profile(fs_root=Path('/')):
+def collect_profile(fs_root=Path('/'), include_kernel_command_line=True):
     def read(path):
         return optional(fs_root / path.lstrip('/'))
     board = read('/proc/device-tree/model') or read('/sys/firmware/devicetree/base/model')
@@ -56,7 +56,7 @@ def collect_profile(fs_root=Path('/')):
             'board_model': board, 'jetson_linux_release': bsp, 'cpu_model': cpu,
             'cpu_online': read('/sys/devices/system/cpu/online'),
             'cpu_affinity': sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else None,
-            'kernel_command_line': read('/proc/cmdline'),
+            'kernel_command_line': read('/proc/cmdline') if include_kernel_command_line else None,
             'schedstats_enabled': read('/proc/sys/kernel/sched_schedstats'),
             'frequency_policies': frequency_policies,
             'nvpmodel_readonly': query(['nvpmodel', '-q']),
