@@ -1,5 +1,8 @@
 .git
 build
+dist
+*.egg-info
+.venv
 results
 __pycache__
 *.bundle

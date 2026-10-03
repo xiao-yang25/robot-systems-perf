@@ -53,14 +53,22 @@ REQUIRE_JETSON=1 ENVIRONMENT_KIND=jetson-native \
 
 ## 采集现有业务
 
-已运行的宿主 ROS 2 节点/组件容器可直接采集，无需重启业务或构建 C++：
+已运行的宿主 ROS 2 节点/组件容器可直接采集，无需重启业务或构建 C++。在仓库目录安装一次（Python 3.9+）：
 
 ```bash
-python3 -m perfkit.monitor --config configs/business-monitor.json \
+python3 -m venv "$HOME/.venvs/robot-systems-perf"
+source "$HOME/.venvs/robot-systems-perf/bin/activate"
+python3 -m pip install .
+```
+
+之后在该环境激活的任意目录运行，无需配置文件：
+
+```bash
+robot-perf-monitor --require-jetson --include-name '^component_container.*$' \
   --output results/orin-business-001
 ```
 
-默认发现当前用户 CPU 活跃候选，并按名称额外纳入 `component_container*`；记录纳入依据，持续采集进程和线程资源。算法语义、组件内部各节点/回调耗时需要另外关联。参数、其他用户与容器范围见 [业务采集指南](docs/BUSINESS_MONITOR.md)。
+默认发现当前用户 CPU 活跃候选，示例名称规则额外纳入组件容器；默认同时最多64个进程，每个进程动态采集线程，可用 `--max-targets` 调到1..256。多个PID或名称可重复指定相应参数。算法语义、组件内部各节点/回调耗时需要另外关联。源码的 `python3 -m perfkit.monitor` 入口仍保留；多进程、离线安装和其他用户范围见 [业务采集指南](docs/BUSINESS_MONITOR.md)。
 
 读取业务结果目录的 `MONITOR_REPORT.md`、`monitor-summary.json` 和 `discovery.jsonl`；无目标或覆盖不足会提示复核。
 

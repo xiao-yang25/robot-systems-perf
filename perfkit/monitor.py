@@ -2,6 +2,7 @@
 import argparse
 import copy
 import hashlib
+from importlib import metadata
 import json
 import math
 import os
@@ -80,13 +81,20 @@ def validate_config(config):
 
 def _source_record():
     root = Path(__file__).resolve().parent.parent
+    revision = None
+    if (root / '.git').exists():
+        try:
+            result = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'],
+                                    capture_output=True, text=True, timeout=5)
+            revision = result.stdout.strip() if result.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     try:
-        revision = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'],
-                                  capture_output=True, text=True, timeout=5)
-        revision = revision.stdout.strip() if revision.returncode == 0 else None
-    except (OSError, subprocess.TimeoutExpired):
-        revision = None
+        package_version = metadata.version('robot-systems-perf')
+    except metadata.PackageNotFoundError:
+        package_version = None
     return {'git_revision': os.environ.get('EP_SOURCE_REVISION') or revision,
+            'package_version': package_version,
             'sha256': {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
                        for path in sorted((root / 'perfkit').glob('*.py'))}}
 

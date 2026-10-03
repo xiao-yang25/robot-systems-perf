@@ -26,6 +26,24 @@ class IdleSampler:
 
 
 class MonitorTests(unittest.TestCase):
+    def test_installed_source_records_version_and_hashes_without_parent_git_guess(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root/'perfkit'
+            package.mkdir()
+            source = package/'monitor.py'
+            source.write_text('fixture source\n')
+            with patch.object(m, '__file__', str(source)), \
+                 patch.object(m.metadata, 'version', return_value='0.3.0'), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch.object(m.subprocess, 'run') as git:
+                record = m._source_record()
+            git.assert_not_called()
+            self.assertIsNone(record['git_revision'])
+            self.assertEqual(record['package_version'], '0.3.0')
+            import hashlib
+            self.assertEqual(record['sha256']['perfkit/monitor.py'], hashlib.sha256(source.read_bytes()).hexdigest())
+
     def test_scope_defaults_to_current_uid_and_cli_patterns_are_validated(self):
         self.assertEqual(m.validate_config({})['uids'], [os.getuid()])
         self.assertIsNone(m.validate_config({'uids': None})['uids'])

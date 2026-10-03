@@ -1,5 +1,15 @@
 # 验证记录
 
+## 独立安装与任意目录入口验证
+
+新增纯Python安装包和 `robot-perf-monitor` 命令。通过PEP517构建后端离线生成 `robot_systems_perf-0.3.0-py3-none-any.whl`；安装运行没有额外Python库依赖，也不包含C++二进制或仓库配置文件。
+
+在ARM64 Linux ROS容器的隔离venv中离线安装正式wheel，删除启动环境的源码PYTHONPATH，从独立工作目录调用实际console入口：帮助与两秒采集均退出0，相对结果目录在该工作目录创建。同时显式纳入两个PID，采集到两个进程和忙碌样例的动态线程；业务样例仍存活。报告的安装版本为0.3.0，所有模块SHA与wheel内容一致，安装位置没有Git时记录null。
+
+9项monitor相关单元测试通过，包含新安装来源口径与此前中断/故障边界。测试安装时复用本机已有pip模块作为离线bootstrap，仅供隔离验证，不进入产品包。原始证据在忽略的 `results/install-verification-pep517`，stdout/stderr在 `results/install-pep517-final.log`。
+
+此项验证的是Linux安装入口和多进程功能；Orin/Thor现场与采集开销的验证范围没有扩大。C01/S01仍需源码仓库的C++/Docker/native入口。
+
 ## 现有业务进程自动采集验证
 
 新增独立 monitor 入口，用于宿主 ROS 2 节点/组件容器的进程和线程资源观察。活动筛选只是候选发现；没有自动识别算法语义或生成业务消息时延。目标 Orin/Thor 仍未连接，验证环境继续为原生 ARM64 Docker Desktop Linux VM。
