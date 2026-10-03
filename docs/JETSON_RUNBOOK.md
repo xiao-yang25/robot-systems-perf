@@ -64,7 +64,7 @@ REQUIRE_JETSON=1 ENVIRONMENT_KIND=jetson-native \
 
 温度、CPU 频率、具名 GPU/EMC devfreq 频率和 hwmon 功率只在当前 sysfs 可见时记录。功率字段单位为 microwatt，保留 rail 名称，不能将可能重叠的电源 rail 相加。[Linux hwmon 单位规范](https://docs.kernel.org/hwmon/sysfs-interface.html)
 
-GPU 使用率与精确 EMC 带宽尚未采集；需要设备补充日志时可使用该 BSP 的 tegrastats，先记录时钟与采样边界，不能将未关联日志直接拼成单条消息的因果链。[NVIDIA tegrastats](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/AT/JetsonLinuxDevelopmentTools/TegrastatsUtility.html)
+0.4可通过资源配置 `jetson_telemetry: true`（monitor也支持 `--jetson-telemetry`）采集该BSP的tegrastats GPU活动、频率及EMC活动百分比，默认关闭；工具缺失与字段缺失保留null和原因。精确EMC带宽仍未采集；接收时钟不代表设备生成时间，不能将未关联日志直接拼成单条消息的因果链。[NVIDIA tegrastats](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/AT/JetsonLinuxDevelopmentTools/TegrastatsUtility.html)
 
 ## 基线与优化边界
 

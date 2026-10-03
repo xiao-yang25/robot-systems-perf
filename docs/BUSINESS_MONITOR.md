@@ -15,7 +15,7 @@ python3 -m pip install .
 后续激活此环境即可从任意有输出写权限的目录使用命令：
 
 ```bash
-robot-perf-monitor --require-jetson --include-name '^component_container.*$' \
+robot-perf-monitor --require-jetson --include-name '^component_conta' \
   --seconds 60 --output results/orin-business-001
 ```
 
@@ -57,7 +57,7 @@ robot-perf-monitor --require-jetson --active-cpu-percent 0 \
 ```bash
 robot-perf-monitor --require-jetson --active-cpu-percent 0 \
   --include-name '^perception_node$' --include-name '^planner_node$' \
-  --include-name '^component_container.*$' --output results/multi-node-001
+  --include-name '^component_conta' --output results/multi-node-001
 ```
 
 CPU 活动不能判断“这是算法进程”；报告保留进程名、可执行文件 basename、PID、UID、启动时间、cgroup 路径和筛选依据。后台服务也可能成为候选，需根据这些信息确认业务范围。Python 节点可能仅显示 python3，CPU 很低的节点或等待 GPU 的工作进程可能漏掉，应使用名称或 PID 显式纳入。
@@ -89,7 +89,7 @@ UID、排除名称和 cgroup 条件是硬过滤，适用于活动、名称、PID
 
 ```bash
 sudo "$HOME/.venvs/robot-systems-perf/bin/robot-perf-monitor" --require-jetson \
-  --include-name '^component_container.*$' --all-users \
+  --include-name '^component_conta' --all-users \
   --output results/all-users-business-001
 ```
 
@@ -129,4 +129,31 @@ SIGINT/SIGTERM 在采集期间结束观察、关闭采样器并保存 interrupte
 
 ## 诊断边界
 
-此模式直接采集现有业务的资源与调度累计线索。它不产生业务消息端到端时延、单次回调耗时、节点级执行期限或因果链，也没有 GPU 使用率/推理时间。已有资源指标与可用性说明见 [设备测试指南](JETSON_RUNBOOK.md)。要从组件容器拆分到节点与回调，需要接入 ROS 追踪或业务时间戳。
+此模式直接采集现有业务的资源与调度累计线索。它不产生业务消息端到端时延、单次回调耗时、节点级执行期限或因果链，也没有 GPU 推理时间；GPU活动可通过0.4可选遥测获取。已有资源指标与可用性说明见 [设备测试指南](JETSON_RUNBOOK.md)。要从组件容器拆分到节点与回调，需要接入 ROS 追踪或业务时间戳。
+
+## 分层采样与可选 Jetson 遥测（0.4）
+
+从通用模板开始，配置不预设算法名称：
+
+```bash
+robot-perf-monitor --config /path/to/robot-systems-perf/configs/jetson-business-basic.json \
+  --include-name '^component_conta' --output results/business-baseline
+```
+
+进程名称筛选同时匹配Linux comm和可执行文件名；comm通常最多15个可见字符；示例 `^component_conta` 匹配组件容器常见的截断名称，须以设备实际发现记录为准，ROS节点名可能不同。
+
+模板要求Jetson，系统/进程每0.5秒、线程每2秒，活动发现每1秒。模板不随wheel安装，源码路径需替换为自己的路径；也可在任意目录直接指定参数：
+
+```bash
+robot-perf-monitor --require-jetson --system-interval 0.5 --process-interval 0.5 \
+  --thread-interval 2 --include-name '^component_conta' \
+  --output results/business-baseline
+```
+
+用 `--thread-name` 或 `--tid` 重复选择关注线程，二者同时设置时取交集；无过滤则采集全部可见线程。`--no-threads` 关闭线程读取，`--skip-temperatures` 关闭温度读取。这些选项缩小观测范围，不证明同等采集能力下的优化。采样周期范围0.1到60秒；默认未覆盖的周期继承 `--interval`。
+
+开启 `--jetson-telemetry --jetson-interval 1` 后读取自有 tegrastats 进程。工具缺失、权限或BSP不兼容不会阻止基础采集，报告提示无有效遥测。多GPC频率独立记录；EMC活动百分比不能换算成GB/s。owned遥测子进程从业务候选中排除，退出不会停止其他已运行的tegrastats。
+
+新证据包括 `resources-costs.jsonl`，开启遥测时另有 `resources-tegrastats.jsonl` 和 `.stderr.log`。摘要新增各层覆盖、采集进程CPU、阶段成本、线程范围、遥测字段原因与预算。示例 `--max-cycle-fraction 0.2 --max-observer-cpu-percent 5` 只是用户设定预算的方式，数值不是Orin/Thor的推荐达标线。周期成本不含成本日志自身写入，采集进程CPU不含tegrastats子进程；预算状态不能代替业务无采集对照。
+
+详细职责、窗口与计数口径、第一阶段/第二阶段推进顺序见 [架构设计](ARCHITECTURE.md)。

@@ -69,7 +69,7 @@ def main():
         output = root / 'sampler-failure-run'
         code = ('import sys; from perfkit.resources import ResourceSampler; '
                 'from perfkit.runner import main; '
-                'ResourceSampler._snapshot=lambda self: (_ for _ in ()).throw(OSError("injected sampler failure")); '
+                'ResourceSampler._snapshot=lambda self, due=None: (_ for _ in ()).throw(OSError("injected sampler failure")); '
                 'sys.argv=["runner","--config",sys.argv[1],"--output",sys.argv[2]]; main()')
         failed = subprocess.run([sys.executable, '-c', code, str(cfg), str(output)],
                                 cwd=ROOT, capture_output=True, timeout=30)

@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import re
 import threading
 import time
 from .lifecycle import defer_interrupts
@@ -18,6 +19,65 @@ PROC_ROOT = Path('/proc')
 SYS_ROOT = Path('/sys')
 CPU_FIELDS = ('user', 'nice', 'system', 'idle', 'iowait', 'irq', 'softirq',
               'steal', 'guest', 'guest_nice')
+
+RESOURCE_OPTIONS = {
+    'system_sampling_seconds': None, 'process_sampling_seconds': None,
+    'thread_sampling_seconds': None, 'collect_threads': True,
+    'thread_names': [], 'thread_ids': [], 'skip_temperatures': False,
+    'jetson_telemetry': False, 'jetson_sampling_seconds': 1.0,
+    'max_cycle_fraction': None, 'max_observer_cpu_percent_one_core': None,
+}
+
+
+def validate_resource_options(options=None):
+    if options is None:
+        options = {}
+    if not isinstance(options, dict) or set(options) - RESOURCE_OPTIONS.keys():
+        raise ValueError('resource_options: object with supported fields required')
+    result = dict(RESOURCE_OPTIONS, **options)
+    for name in ('system_sampling_seconds', 'process_sampling_seconds',
+                 'thread_sampling_seconds', 'jetson_sampling_seconds'):
+        value = result[name]
+        if value is None and name != 'jetson_sampling_seconds':
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not .1 <= value <= 60:
+            raise ValueError(name + ': finite seconds in [0.1, 60] required')
+    for name in ('collect_threads', 'skip_temperatures', 'jetson_telemetry'):
+        if not isinstance(result[name], bool):
+            raise ValueError(name + ': boolean required')
+    names, tids = result['thread_names'], result['thread_ids']
+    if not isinstance(names, list) or len(names) > 64 or any(not isinstance(name, str) or not name or len(name) > 512 for name in names):
+        raise ValueError('thread_names: bounded list of regular expressions required')
+    for name in names:
+        try:
+            re.compile(name)
+        except re.error as error:
+            raise ValueError('thread_names: invalid regular expression') from error
+    if not isinstance(tids, list) or len(tids) > 4096 or any(isinstance(tid, bool) or not isinstance(tid, int) or tid <= 0 for tid in tids):
+        raise ValueError('thread_ids: bounded list of positive TIDs required')
+    for name in ('max_cycle_fraction', 'max_observer_cpu_percent_one_core'):
+        value = result[name]
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1000000):
+            raise ValueError(name + ': null or finite nonnegative budget required')
+    # Do not retain mutable lists owned by callers.
+    result['thread_names'], result['thread_ids'] = list(names), list(tids)
+    return result
+
+
+class _Costs:
+    """Bounded count/sum/max statistics; no retained per-cycle population."""
+    def __init__(self):
+        self.values = {}
+
+    def add(self, name, value):
+        state = self.values.setdefault(name, {'count': 0, 'sum_ns': 0, 'max_ns': 0})
+        state['count'] += 1
+        state['sum_ns'] += value
+        state['max_ns'] = max(state['max_ns'], value)
+
+    def result(self):
+        return {name: dict(state, mean_ns=state['sum_ns'] / state['count'])
+                for name, state in self.values.items()}
 
 
 def parse_cpu_stat(text):
@@ -58,7 +118,7 @@ def parse_task_stat(text):
 def _read(path, parser=lambda text: text.strip()):
     try:
         return parser(path.read_text(encoding='utf-8')), None
-    except (OSError, ValueError, IndexError) as exc:
+    except (OSError, ValueError, IndexError, TypeError) as exc:
         return None, type(exc).__name__ + ': ' + str(exc)
 
 
@@ -171,11 +231,22 @@ class ResourceSampler:
     identity even if the same operating-system process remains alive.
     """
 
-    def __init__(self, output: Path, interval: float, window_source='CSV_monotonic_timestamps'):
-        if not math.isfinite(interval) or interval <= 0:
+    def __init__(self, output: Path, interval: float, window_source='CSV_monotonic_timestamps', options=None):
+        if isinstance(interval, bool) or not math.isfinite(interval) or interval <= 0:
             raise ValueError('resource sampling interval must be positive and finite')
         self.output = Path(output)
         self.interval = interval
+        self.options = validate_resource_options(options)
+        self.source_intervals = {name: self.options[name + '_sampling_seconds'] or interval
+                                 for name in ('system', 'process', 'thread')}
+        self._thread_patterns = [re.compile(name) for name in self.options['thread_names']]
+        self._thread_ids = set(self.options['thread_ids'])
+        self.cadence = min([interval, self.source_intervals['system'], self.source_intervals['process']] +
+                          ([self.source_intervals['thread']] if self.options['collect_threads'] else []))
+        self.costs_path = self.output.with_name(self.output.stem + '-costs.jsonl')
+        self._cost_stream = None
+        self._telemetry = None
+        self._cycle_id = 0
         if window_source not in ('CSV_monotonic_timestamps', 'monitor_monotonic_timestamps'):
             raise ValueError('unsupported resource window source')
         self.window_source = window_source
@@ -206,6 +277,9 @@ class ResourceSampler:
                                      'identity_reason': reason}
         return True
 
+    def owned_process_ids(self):
+        return self._telemetry.owned_process_ids() if self._telemetry is not None else ()
+
     def unregister(self, pid):
         with self._lock:
             self._registered.pop(int(pid), None)
@@ -219,11 +293,29 @@ class ResourceSampler:
             raise RuntimeError('ResourceSampler cannot be entered twice')
         # Do not overwrite existing evidence, including a previous failed run.
         self._stream = self.output.open('x', encoding='utf-8')
-        self._thread = threading.Thread(target=self._run, name='resource-sampler', daemon=True)
         try:
-            self._thread.start()
+            self._cost_stream = self.costs_path.open('x', encoding='utf-8')
+            if self.options['jetson_telemetry']:
+                from .jetson import TegrastatsCollector
+                self._telemetry = TegrastatsCollector(
+                    self.output.with_name(self.output.stem + '-tegrastats.jsonl'),
+                    self.options['jetson_sampling_seconds'], enabled=True)
+                self._telemetry.__enter__()
+            self._thread = threading.Thread(target=self._run, name='resource-sampler', daemon=True)
+            with defer_interrupts():
+                self._thread.start()
         except BaseException:
-            self._stream.close()
+            with defer_interrupts():
+                self._stop.set()
+                if self._thread is not None and self._thread.ident is not None:
+                    self._thread.join()
+                try:
+                    if self._telemetry is not None:
+                        self._telemetry.__exit__(None, None, None)
+                finally:
+                    if self._cost_stream is not None:
+                        self._cost_stream.close()
+                    self._stream.close()
             raise
         return self
 
@@ -232,11 +324,16 @@ class ResourceSampler:
             self._stop.set()
             if self._thread is not None:
                 self._thread.join()
-            if self._stream is not None:
-                try:
-                    self._stream.close()
-                except OSError as exc:
-                    self.error = self.error or type(exc).__name__ + ': ' + str(exc)
+            try:
+                if self._telemetry is not None:
+                    self._telemetry.__exit__(exc_type, exc_value, traceback)
+            finally:
+                for stream in (self._stream, self._cost_stream):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except OSError as exc:
+                            self.error = self.error or type(exc).__name__ + ': ' + str(exc)
         return False
 
     def _system(self):
@@ -244,7 +341,8 @@ class ResourceSampler:
         memory, memory_reason = _read(PROC_ROOT / 'meminfo', _meminfo)
         sched_enabled, enabled_reason = _read(PROC_ROOT / 'sys/kernel/sched_schedstats', int)
         temperatures = {}
-        for path in sorted((SYS_ROOT / 'class/thermal').glob('thermal_zone*/temp')):
+        for path in ([] if self.options['skip_temperatures'] else
+                     sorted((SYS_ROOT / 'class/thermal').glob('thermal_zone*/temp'))):
             value, reason = _read(path, lambda text: int(text.strip()) / 1000)
             label, _ = _read(path.parent / 'type')
             temperatures[path.parent.name] = {'celsius': value, 'label': label, 'reason': reason}
@@ -267,7 +365,9 @@ class ResourceSampler:
         device_frequencies = {}
         for path in sorted((SYS_ROOT / 'class/devfreq').glob('*/cur_freq')):
             name = path.parent.name
-            if not any(kind in name.lower() for kind in ('gpu', 'emc')):
+            label, _ = _read(path.parent / 'name')
+            words = set(re.split(r'[^a-z0-9]+', (name + ' ' + (label or '')).lower()))
+            if not words & {'gpu', 'emc', 'ga10b', 'gv11b', 'gb20b'}:
                 continue
             value, reason = _read(path, int)
             device_frequencies[name] = {'hz': value, 'source': 'devfreq_cur_freq', 'reason': reason}
@@ -279,78 +379,188 @@ class ResourceSampler:
                 'rail_power': rails or None, 'device_frequencies': device_frequencies or None,
                 'availability': {'per_cpu_ticks': cpu_reason, 'meminfo_bytes': memory_reason,
                                  'sched_schedstats_enabled': enabled_reason,
-                                 'temperatures': None if temperatures else 'thermal sysfs unavailable',
+                                 'temperatures': ('disabled by configuration' if self.options['skip_temperatures'] else
+                                                  None if temperatures else 'thermal sysfs unavailable'),
                                  'cpu_frequencies': None if frequencies else 'CPU frequency sysfs unavailable',
                                  'rail_power': None if rails else 'hwmon power inputs not exposed',
                                  'device_frequencies': None if device_frequencies else 'named GPU/EMC devfreq not exposed'},
                 'gpu_utilization': None, 'emc_bandwidth': None,
                 'unimplemented': ['gpu_utilization', 'emc_bandwidth']}
 
-    def _snapshot(self):
+    def _threads(self, registration):
+        """Read only selected tasks, verifying the containing process both sides."""
+        base = PROC_ROOT / str(registration['pid'])
+        before, reason = _read(base / 'stat', parse_task_stat)
+        expected = registration['starttime_ticks']
+        selection = {'seen': 0, 'sampled': 0, 'omitted': 0,
+                     'omitted_by_reason': {}, 'scope': 'configured_thread_selection'}
+        if before is None or expected is None or before['starttime_ticks'] != expected:
+            return None, reason or 'PID identity not verified', selection
+        try:
+            paths = sorted(path for path in (base / 'task').iterdir() if path.name.isdigit())
+            tasks = []
+            for path in paths:
+                selection['seen'] += 1
+                tid = int(path.name)
+                omitted = None
+                if self._thread_ids and tid not in self._thread_ids:
+                    omitted = 'tid_filter'
+                elif self._thread_patterns:
+                    stat, failure = _read(path / 'stat', parse_task_stat)
+                    if stat is None:
+                        # Preserve failed reads instead of treating unreadable names as filtered.
+                        tasks.append({'tid': tid, 'stat': None, 'status': None, 'schedstat': None,
+                                      'availability': {'stat': failure}})
+                        selection['sampled'] += 1
+                        continue
+                    if not any(pattern.search(stat['comm']) for pattern in self._thread_patterns):
+                        omitted = 'name_filter'
+                if omitted:
+                    selection['omitted'] += 1
+                    reasons = selection['omitted_by_reason']
+                    reasons[omitted] = reasons.get(omitted, 0) + 1
+                    continue
+                task = _task(path, self._page_size)
+                task['tid'] = tid
+                if self._thread_patterns and task.get('stat') is not None and (
+                        task['stat']['starttime_ticks'] != stat['starttime_ticks'] or
+                        not any(pattern.search(task['stat']['comm']) for pattern in self._thread_patterns)):
+                    task = {'tid': tid, 'stat': None, 'status': None, 'schedstat': None,
+                            'availability': {'stat': 'thread identity/name changed during selection'}}
+                tasks.append(task)
+                selection['sampled'] += 1
+            after, reason = _read(base / 'stat', parse_task_stat)
+            if after is None or after['starttime_ticks'] != expected:
+                return None, reason or 'PID identity changed during thread snapshot', selection
+            return tasks, None, selection
+        except OSError as error:
+            return None, type(error).__name__ + ': ' + str(error), selection
+
+    def _snapshot(self, due=None):
+        if due is None:
+            due = {'system', 'process', 'thread'}
+        if not self.options['collect_threads']:
+            due = set(due) - {'thread'}
         with self._lock:
             registrations = [dict(item) for item in self._registered.values()]
             window = dict(self._window)
         started = time.monotonic_ns()
         processes, cgroups = [], {}
-        own_cgroup, own_reason = _cgroup_path('self')
+        source_windows, phase_costs = {}, {}
+
+        def phase(name, action):
+            begin = time.monotonic_ns()
+            value = action()
+            end = time.monotonic_ns()
+            source_windows[name] = {'start_ns': begin, 'end_ns': end}
+            phase_costs[name] = end - begin
+            return value
+
+        system = phase('system', self._system) if 'system' in due else None
+        own_cgroup, own_reason = None, 'not scheduled this cycle'
+        if 'process' in due:
+            own_cgroup, own_reason = _cgroup_path('self')
         cgroup_paths = {own_cgroup} if own_cgroup else set()
-        for registration in registrations:
-            pid = registration['pid']
-            base = PROC_ROOT / str(pid)
-            data = _task(base, self._page_size)
-            expected = registration['starttime_ticks']
-            actual = data['stat']['starttime_ticks'] if data['stat'] else None
-            if expected is None or actual != expected:
-                data = {'stat': None, 'schedstat': None, 'status': None,
-                        'availability': {'stat': registration['identity_reason'] or 'PID identity unavailable or changed',
-                                         'schedstat': 'PID identity not verified',
-                                         'status': 'PID identity not verified'}}
-                tasks = None
-                task_reason = 'PID identity not verified'
-                cgroup, cgroup_reason = None, 'PID identity not verified'
-            else:
-                try:
-                    paths = sorted(path for path in (base / 'task').iterdir() if path.name.isdigit())
-                    tasks = []
-                    for path in paths:
-                        task = _task(path, self._page_size)
-                        task['tid'] = int(path.name)
-                        tasks.append(task)
-                    task_reason = None
-                except OSError as exc:
-                    tasks, task_reason = None, type(exc).__name__ + ': ' + str(exc)
-                cgroup, cgroup_reason = _cgroup_path(pid)
-                verify, _ = _read(base / 'stat', parse_task_stat)
-                if verify is None or verify['starttime_ticks'] != expected:
+        if 'process' in due or 'thread' in due:
+            processes = [dict(registration, stat=None, schedstat=None, status=None,
+                              availability={}, process_sampled='process' in due,
+                              tasks_sampled='thread' in due, tasks=None,
+                              tasks_reason=('disabled by configuration' if not self.options['collect_threads'] else
+                                            'not scheduled this cycle'),
+                              cgroup=None, cgroup_reason='not scheduled this cycle')
+                         for registration in registrations]
+
+        def read_processes():
+            for process in processes:
+                base = PROC_ROOT / str(process['pid'])
+                expected = process['starttime_ticks']
+                data = _task(base, self._page_size)
+                if expected is None or not data['stat'] or data['stat']['starttime_ticks'] != expected:
                     data = {'stat': None, 'schedstat': None, 'status': None,
-                            'availability': {'stat': 'PID identity changed during snapshot',
-                                             'schedstat': 'PID identity not verified', 'status': 'PID identity not verified'}}
-                    tasks, task_reason = None, 'PID identity not verified'
+                            'availability': {'stat': process['identity_reason'] or 'PID identity not verified',
+                                             'schedstat': 'PID identity not verified',
+                                             'status': 'PID identity not verified'}}
                     cgroup, cgroup_reason = None, 'PID identity not verified'
-            if cgroup:
-                cgroup_paths.add(cgroup)
-            processes.append(dict(registration, **data, tasks=tasks,
-                                  tasks_reason=task_reason, cgroup=cgroup, cgroup_reason=cgroup_reason))
-        for path in sorted(cgroup_paths):
-            cpu, cpu_reason = _read(Path(path) / 'cpu.stat', _kv)
-            memory, memory_reason = _read(Path(path) / 'memory.current', int)
-            cgroups[path] = {'cpu_stat': cpu, 'memory_current_bytes': memory,
-                             'availability': {'cpu_stat': cpu_reason, 'memory_current_bytes': memory_reason}}
-        system = self._system()
+                else:
+                    cgroup, cgroup_reason = _cgroup_path(process['pid'])
+                    verify, reason = _read(base / 'stat', parse_task_stat)
+                    if verify is None or verify['starttime_ticks'] != expected:
+                        data = {'stat': None, 'schedstat': None, 'status': None,
+                                'availability': {'stat': reason or 'PID identity changed during snapshot',
+                                                 'schedstat': 'PID identity not verified', 'status': 'PID identity not verified'}}
+                        cgroup, cgroup_reason = None, 'PID identity not verified'
+                if cgroup:
+                    cgroup_paths.add(cgroup)
+                process.update(data, cgroup=cgroup, cgroup_reason=cgroup_reason)
+
+        def read_threads():
+            for process in processes:
+                tasks, reason, selection = self._threads(process)
+                process.update(tasks=tasks, tasks_reason=reason, thread_selection=selection)
+
+        def read_cgroups():
+            for path in sorted(cgroup_paths):
+                cpu, cpu_reason = _read(Path(path) / 'cpu.stat', _kv)
+                memory, memory_reason = _read(Path(path) / 'memory.current', int)
+                cgroups[path] = {'cpu_stat': cpu, 'memory_current_bytes': memory,
+                                'availability': {'cpu_stat': cpu_reason, 'memory_current_bytes': memory_reason}}
+
+        if 'process' in due:
+            phase('process', read_processes)
+            phase('cgroup', read_cgroups)
+        if 'thread' in due:
+            phase('thread', read_threads)
+        observer = phase('observer', lambda: {'process_cpu_ns': time.process_time_ns(),
+                                              'pid': os.getpid(), 'scope': 'whole_collector_process'})
+        telemetry = self._telemetry.snapshot() if self._telemetry is not None else None
         return {'schema_version': 1, 'monotonic_ns': started,
                 'sample_end_ns': time.monotonic_ns(), 'window': window,
                 'window_semantics': 'tags_only; measurement_window_uses_' + self.window_source,
                 'clock_ticks_per_second': self._clock_ticks, 'page_size_bytes': self._page_size,
                 'system': system, 'processes': processes, 'cgroups': cgroups,
-                'sampler_cgroup': own_cgroup, 'sampler_cgroup_reason': own_reason}
+                'sampler_cgroup': own_cgroup, 'sampler_cgroup_reason': own_reason,
+                'source_windows': source_windows, 'phase_costs_ns': phase_costs,
+                'observer': observer, 'jetson_telemetry': telemetry,
+                'resource_options': self.options,
+                'thread_scope': {'enabled': self.options['collect_threads'],
+                                 'name_patterns': self.options['thread_names'],
+                                 'tids': self.options['thread_ids']}}
 
     def _run(self):
         try:
+            periods = {name: round(value * 1e9) for name, value in self.source_intervals.items()
+                       if name != 'thread' or self.options['collect_threads']}
+            cadence_ns = max(1, round(self.cadence * 1e9))
+            planned = time.monotonic_ns()
+            next_due = {name: planned for name in periods}
             while not self._stop.is_set():
-                before = time.monotonic()
-                self._stream.write(json.dumps(self._snapshot(), allow_nan=False) + '\n')
+                before, cpu_before = time.monotonic_ns(), time.thread_time_ns()
+                due = {name for name, deadline in next_due.items() if before >= deadline}
+                self._cycle_id += 1
+                sample = self._snapshot(due)
+                sample['cycle_id'] = self._cycle_id
+                encode_start = time.monotonic_ns()
+                payload = json.dumps(sample, allow_nan=False) + '\n'
+                encode_end = time.monotonic_ns()
+                self._stream.write(payload)
                 self._stream.flush()
-                self._stop.wait(max(0, self.interval - (time.monotonic() - before)))
+                write_end = time.monotonic_ns()
+                costs = {'schema_version': 1, 'cycle_id': self._cycle_id,
+                         'start_ns': before, 'end_ns': write_end,
+                         'cadence_ns': cadence_ns, 'duration_ns': write_end - before,
+                         'over_period': write_end - before > cadence_ns,
+                         'thread_cpu_ns': time.thread_time_ns() - cpu_before,
+                         'phase_costs_ns': dict(sample['phase_costs_ns'],
+                                                encode=encode_end - encode_start,
+                                                resource_write_flush=write_end - encode_end),
+                         'scope': 'sampler_collection_encoding_resource_write; excludes_cost_record_write'}
+                self._cost_stream.write(json.dumps(costs, allow_nan=False) + '\n')
+                self._cost_stream.flush()
+                finished = time.monotonic_ns()
+                for name in due:
+                    next_due[name] += max(1, (finished - next_due[name]) // periods[name] + 1) * periods[name]
+                planned += max(1, (finished - planned) // cadence_ns + 1) * cadence_ns
+                self._stop.wait(max(0, (planned - time.monotonic_ns()) / 1e9))
         except Exception as exc:
             self.error = type(exc).__name__ + ': ' + str(exc)
 
@@ -441,6 +651,47 @@ def _finish_ranges(ranges):
             for key, value in ranges.items()} or None
 
 
+def summarize_costs(path, start_ns, end_ns):
+    """Cost log excludes its own write; CPU observer covers the whole parent process."""
+    result = {'available': False, 'reason': 'cost log absent or no complete cycles in window',
+              'cycles': 0, 'over_period_cycles': 0, 'cycle_fraction_max': None,
+              'phase_costs_ns': {},
+              'scope': 'sampler collection, encoding, resource write/flush; excludes cost-log write and tegrastats child CPU'}
+    if not path.exists():
+        return result
+    phases, previous = _Costs(), None
+    with path.open(encoding='utf-8') as stream:
+        for number, line in enumerate(stream, 1):
+            try:
+                item = json.loads(line)
+                begin, end, period = item['start_ns'], item['end_ns'], item['cadence_ns']
+                if any(isinstance(v, bool) or not isinstance(v, int) for v in (begin, end, period)) or begin > end or period <= 0 or item['duration_ns'] != end - begin:
+                    raise ValueError('invalid cost interval')
+                identity = item['cycle_id']
+                if not isinstance(identity, int) or isinstance(identity, bool) or identity <= 0 or item.get('schema_version') != 1:
+                    raise ValueError('invalid cost identity')
+                if begin < start_ns or end > end_ns:
+                    continue
+                if previous is not None and (identity <= previous[0] or begin <= previous[1]):
+                    raise ValueError('cost intervals must increase')
+                previous = identity, begin
+                fraction = (end - begin) / period
+                phases.add('cycle', end - begin)
+                for name, duration in item['phase_costs_ns'].items():
+                    if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0 or duration > end - begin:
+                        raise ValueError('invalid phase cost')
+                    phases.add(name, duration)
+                result['cycles'] += 1
+                result['over_period_cycles'] += fraction > 1
+                result['cycle_fraction_max'] = max(result['cycle_fraction_max'] or 0, fraction)
+            except (ValueError, KeyError, TypeError) as error:
+                raise ValueError('invalid cost record at line ' + str(number)) from error
+    result.update(available=result['cycles'] > 0, phase_costs_ns=phases.result())
+    if result['available']:
+        result['reason'] = None
+    return result
+
+
 def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
     """Stream raw JSONL and summarize only [start_ns, end_ns] observations.
 
@@ -458,7 +709,19 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
     rail_labels, device_sources, sched_settings = {}, {}, {}
     availability = {}
     clock_ticks = None
-    identity_keys_previous = set()
+    identity_keys_previous = {'process': set(), 'thread': set()}
+    source_coverage, source_previous = {}, {}
+    observer_counter = _Counters()
+    thread_scope = {'enabled': None, 'name_patterns': [], 'tids': [],
+                    'selection': {'seen': 0, 'sampled': 0, 'omitted': 0, 'omitted_by_reason': {}}}
+    options = None
+    telemetry = {'enabled': False, 'available': False, 'reason': 'disabled or legacy input',
+                 'unique_samples': 0, 'available_snapshots': 0, 'unavailable_snapshots': 0,
+                 'reasons': [], 'value_ranges': None, 'field_availability': {},
+                 'units': {'gpu_utilization_percent': 'percent', 'gpu_frequency_mhz': 'MHz',
+                           'emc_activity_percent': 'percent', 'emc_frequency_mhz': 'MHz'},
+                 'clock_semantics': 'local receipt monotonic time; not device generation time'}
+    telemetry_ranges, last_telemetry_id = {}, None
     cgroup_keys_previous = set()
     cpu_keys_previous = set()
 
@@ -522,24 +785,88 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
                 gap_max = gap if gap_max is None else max(gap_max, gap)
             previous_sample = now
             duration_max = max(duration_max, sample.get('sample_end_ns', now) - now)
-            unavailable('sampler_cgroup', sample.get('sampler_cgroup_reason'))
+            windows = sample.get('source_windows')
+            if windows is None:
+                windows = {name: {'start_ns': now, 'end_ns': finished}
+                           for name in ('system', 'process', 'thread', 'cgroup')}
+            if not isinstance(windows, dict):
+                raise ValueError('invalid source windows')
+            for name, window in windows.items():
+                if name not in ('system', 'process', 'thread', 'cgroup', 'observer') or not isinstance(window, dict):
+                    raise ValueError('invalid source window')
+                begin, finish = window.get('start_ns'), window.get('end_ns')
+                if any(isinstance(v, bool) or not isinstance(v, int) for v in (begin, finish)) or not now <= begin <= finish <= finished:
+                    raise ValueError('source window outside collection interval')
+                previous = source_previous.get(name)
+                if previous is not None and begin <= previous:
+                    raise ValueError('source timestamps must increase')
+                state = source_coverage.setdefault(name, {'samples': 0, 'observed_start_ns': begin,
+                                                          'observed_end_ns': finish, 'sample_gap_ns_max': None,
+                                                          'sample_duration_ns_max': 0})
+                state['samples'] += 1
+                state['observed_end_ns'] = finish
+                state['sample_duration_ns_max'] = max(state['sample_duration_ns_max'], finish - begin)
+                if previous is not None:
+                    state['sample_gap_ns_max'] = max(state['sample_gap_ns_max'] or 0, begin - previous)
+                source_previous[name] = begin
+            if 'process' in windows:
+                unavailable('sampler_cgroup', sample.get('sampler_cgroup_reason'))
+            if sample.get('resource_options') is not None:
+                current_options = validate_resource_options(sample['resource_options'])
+                if options is not None and options != current_options:
+                    raise ValueError('resource options changed inside window')
+                options = current_options
+            current_scope = sample.get('thread_scope')
+            if current_scope:
+                for key in ('enabled', 'name_patterns', 'tids'):
+                    thread_scope[key] = current_scope[key]
+            if 'observer' in windows:
+                observed = sample.get('observer') or {}
+                value = observed.get('process_cpu_ns')
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError('invalid observer CPU counter')
+                observer_counter.add(windows['observer']['start_ns'], {'process_cpu_ns': value})
+            jetson = sample.get('jetson_telemetry')
+            if jetson is not None:
+                telemetry['enabled'] = True
+                usable = jetson.get('available') is True
+                telemetry['available_snapshots' if usable else 'unavailable_snapshots'] += 1
+                for field, field_reason in (jetson.get('values') or {}).get('availability', {}).items():
+                    unavailable('jetson.' + field, field_reason)
+                reason = jetson.get('reason')
+                if reason and reason not in telemetry['reasons'] and len(telemetry['reasons']) < 8:
+                    telemetry['reasons'].append(reason)
+                received, identity = jetson.get('received_monotonic_ns'), jetson.get('sample_id')
+                if usable and isinstance(received, int) and not isinstance(received, bool) and start_ns <= received <= end_ns and identity != last_telemetry_id:
+                    if not isinstance(identity, int) or isinstance(identity, bool) or identity < 1 or (last_telemetry_id is not None and identity < last_telemetry_id):
+                        raise ValueError('invalid telemetry identity')
+                    last_telemetry_id = identity
+                    telemetry['unique_samples'] += 1
+                    for key, value in (jetson.get('values') or {}).items():
+                        if key == 'gpu_frequency_mhz' and isinstance(value, list):
+                            for index, frequency in enumerate(value):
+                                _range_add(telemetry_ranges, key + '.gpc' + str(index), frequency)
+                        elif key in ('gpu_utilization_percent', 'emc_activity_percent', 'emc_frequency_mhz'):
+                            _range_add(telemetry_ranges, key, value)
+            system_now = windows.get('system', {}).get('start_ns', now)
             ticks = sample.get('clock_ticks_per_second')
             if clock_ticks is None:
                 clock_ticks = ticks
             elif ticks != clock_ticks:
                 raise ValueError('resource clock tick frequency changed')
-            system = sample.get('system') or {}
+            system = (sample.get('system') or {}) if 'system' in windows else {}
             for field, reason in system.get('availability', {}).items():
                 unavailable('system.' + field, reason)
             cpus = system.get('per_cpu_ticks') or {}
-            for key in cpu_keys_previous - cpus.keys():
+            for key in (cpu_keys_previous - cpus.keys()) if 'system' in windows else ():
                 cpu_counters[key].previous = None
             for name, values in cpus.items():
                 # Do not invent absent fields, nor double-count guest/guest_nice.
                 counters = {key: values.get(key) for key in CPU_FIELDS[:8] if key in values}
                 state = cpu_counters.setdefault(name, _CpuCounters())
-                state.add(now, counters)
-            cpu_keys_previous = set(cpus)
+                state.add(system_now, counters)
+            if 'system' in windows:
+                cpu_keys_previous = set(cpus)
             for name, data in (system.get('temperatures') or {}).items():
                 _range_add(temperatures, name, data.get('celsius'))
                 unavailable('temperature.' + name, data.get('reason'))
@@ -558,27 +885,38 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
             _range_add(sched_settings, 'sched_schedstats_enabled', system.get('sched_schedstats_enabled'))
             for name, value in (system.get('meminfo_bytes') or {}).items():
                 _range_add(meminfo, name, value)
-            present_entities = set()
+            present_entities = {'process': set(), 'thread': set()}
             for process in sample.get('processes') or []:
                 stat = process.get('stat')
                 base = 'pid={}:registration={}:start={}'.format(process['pid'], process['registration_id'], process.get('starttime_ticks'))
+                if 'process' in windows and process.get('process_sampled', True):
+                    unavailable(base + '.cgroup', process.get('cgroup_reason'))
+                    if stat is None:
+                        for field, reason in process.get('availability', {}).items():
+                            unavailable(base + '.' + field, reason)
+                    elif stat['starttime_ticks'] != process.get('starttime_ticks'):
+                        unavailable(base + '.stat', 'PID identity differs from registration')
+                    else:
+                        metadata = {'pid': process['pid'], 'role': process['role'], 'comm': stat.get('comm'),
+                                    'registration_id': process['registration_id'],
+                                    'starttime_ticks': stat['starttime_ticks'], 'kind': 'process',
+                                    'cpu_scope': 'all_process_threads',
+                                    'schedstat_and_context_switch_scope': 'leader_thread_only',
+                                    'rss_scope': 'process_address_space', 'cgroup': process.get('cgroup')}
+                        observe_entity(base, process, metadata, windows['process']['start_ns'])
+                        present_entities['process'].add(base)
+                if 'thread' not in windows or not process.get('tasks_sampled', True):
+                    continue
                 unavailable(base + '.tasks', process.get('tasks_reason'))
-                unavailable(base + '.cgroup', process.get('cgroup_reason'))
-                if stat is None:
-                    for field, reason in process.get('availability', {}).items():
-                        unavailable(base + '.' + field, reason)
+                selection = process.get('thread_selection') or {}
+                aggregate = thread_scope['selection']
+                for key in ('seen', 'sampled', 'omitted'):
+                    aggregate[key] += selection.get(key, 0)
+                for reason, amount in selection.get('omitted_by_reason', {}).items():
+                    aggregate['omitted_by_reason'][reason] = aggregate['omitted_by_reason'].get(reason, 0) + amount
+                # Legacy records tie thread validity to the containing process stat.
+                if 'source_windows' not in sample and (stat is None or stat['starttime_ticks'] != process.get('starttime_ticks')):
                     continue
-                if stat['starttime_ticks'] != process.get('starttime_ticks'):
-                    unavailable(base + '.stat', 'PID identity differs from registration')
-                    continue
-                metadata = {'pid': process['pid'], 'role': process['role'], 'comm': stat.get('comm'),
-                            'registration_id': process['registration_id'],
-                            'starttime_ticks': stat['starttime_ticks'], 'kind': 'process',
-                            'cpu_scope': 'all_process_threads',
-                            'schedstat_and_context_switch_scope': 'leader_thread_only',
-                            'rss_scope': 'process_address_space', 'cgroup': process.get('cgroup')}
-                observe_entity(base, process, metadata, now)
-                present_entities.add(base)
                 for task in process.get('tasks') or []:
                     if task.get('stat') is None:
                         for field, reason in task.get('availability', {}).items():
@@ -591,25 +929,28 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
                                 'starttime_ticks': task['stat']['starttime_ticks'], 'kind': 'thread',
                                 'cpu_scope': 'thread', 'schedstat_and_context_switch_scope': 'thread',
                                 'rss_scope': 'shared_process_address_space'}
-                    observe_entity(key, task, metadata, now)
-                    present_entities.add(key)
-            for key in identity_keys_previous - present_entities:
-                entities[key]['counter'].previous = None
-            identity_keys_previous = present_entities
-            current_cgroups = sample.get('cgroups') or {}
-            for key in cgroup_keys_previous - current_cgroups.keys():
+                    observe_entity(key, task, metadata, windows['thread']['start_ns'])
+                    present_entities['thread'].add(key)
+            for kind in ('process', 'thread'):
+                if kind in windows:
+                    for key in identity_keys_previous[kind] - present_entities[kind]:
+                        entities[key]['counter'].previous = None
+                    identity_keys_previous[kind] = present_entities[kind]
+            current_cgroups = (sample.get('cgroups') or {}) if 'cgroup' in windows else {}
+            for key in (cgroup_keys_previous - current_cgroups.keys()) if 'cgroup' in windows else ():
                 cgroups[key]['counter'].previous = None
             for key, data in current_cgroups.items():
                 state = cgroups.setdefault(key, {'counter': _Counters(), 'memory_peak_bytes': None, 'samples': 0})
                 state['samples'] += 1
-                state['counter'].add(now, {field: (data.get('cpu_stat') or {}).get(field)
+                state['counter'].add(windows['cgroup']['start_ns'], {field: (data.get('cpu_stat') or {}).get(field)
                                           for field in ('usage_usec', 'user_usec', 'system_usec', 'nr_periods', 'nr_throttled', 'throttled_usec')})
                 memory = data.get('memory_current_bytes')
                 if memory is not None:
                     state['memory_peak_bytes'] = max(state['memory_peak_bytes'] or 0, memory)
                 for field, reason in data.get('availability', {}).items():
                     unavailable('cgroup.' + key + '.' + field, reason)
-            cgroup_keys_previous = set(current_cgroups)
+            if 'cgroup' in windows:
+                cgroup_keys_previous = set(current_cgroups)
 
     cpu_results = {}
     for name, state in cpu_counters.items():
@@ -639,6 +980,35 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
         raw.update({'memory_peak_bytes': state['memory_peak_bytes'], 'samples': state['samples'],
                     'scope': 'cgroup_v2; may_include_unregistered_processes'})
         cgroup_results[key] = raw
+    for state in source_coverage.values():
+        state['observed_span_ns'] = state['observed_end_ns'] - state['observed_start_ns'] if state['samples'] >= 2 else None
+    observer = observer_counter.result(('process_cpu_ns',))
+    observer_elapsed = observer['covered_ns']['process_cpu_ns']
+    observer_cpu = observer['delta']['process_cpu_ns']
+    observer.update(cpu_percent_one_core=100 * observer_cpu / observer_elapsed if observer_elapsed and observer_cpu is not None else None,
+                    scope='whole_collector_process; excludes owned tegrastats child CPU',
+                    reason=None if observer_elapsed else 'fewer than two valid observer observations')
+    telemetry['value_ranges'] = dict.fromkeys(('gpu_utilization_percent', 'gpu_frequency_mhz',
+                                              'emc_activity_percent', 'emc_frequency_mhz'))
+    telemetry['value_ranges'].update(_finish_ranges(telemetry_ranges) or {})
+    gpu_ranges = {key.split('.gpc')[1]: value for key, value in telemetry['value_ranges'].items()
+                  if key.startswith('gpu_frequency_mhz.gpc')}
+    telemetry['value_ranges']['gpu_frequency_mhz'] = gpu_ranges or None
+    telemetry['field_availability'] = {key.removeprefix('jetson.'): value for key, value in availability.items()
+                                       if key.startswith('jetson.')}
+    telemetry['available'] = telemetry['unique_samples'] > 0
+    telemetry['reason'] = None if telemetry['available'] else ('no fresh unique sample received inside window' if telemetry['enabled'] else 'disabled or legacy input')
+    costs = summarize_costs(Path(path).with_name(Path(path).stem + '-costs.jsonl'), start_ns, end_ns)
+    limits = {key: (options or {}).get(key) for key in ('max_cycle_fraction', 'max_observer_cpu_percent_one_core')}
+    observations = {'max_cycle_fraction': costs.get('cycle_fraction_max'),
+                    'max_observer_cpu_percent_one_core': observer['cpu_percent_one_core']}
+    configured = {key: limit for key, limit in limits.items() if limit is not None}
+    missing = [key for key in configured if observations[key] is None]
+    exceeded = [key for key, limit in configured.items() if observations[key] is not None and observations[key] > limit]
+    budget = {'status': 'not_configured' if not configured else
+              'not_evaluated' if missing else 'exceeded' if exceeded else 'within_observed_scope',
+              'limits': limits, 'observed': observations, 'reasons': missing + exceeded,
+              'scope': 'instrumented sampler cost and collector-process CPU; not business-impact validation'}
     return {'schema_version': 1, 'window_start_ns': start_ns, 'window_end_ns': end_ns,
             'scope': 'observed_subintervals_inside_CSV_measurement_window; no_boundary_extrapolation',
             'snapshot_inclusion': 'entire_collection_interval_inside_window',
@@ -664,6 +1034,10 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
                        'named_device_frequency_sources': device_sources or None,
                        'memory_scope': 'machine_meminfo; not_process_RSS'},
             'registered_entities': entity_results or None, 'cgroups': cgroup_results or None,
-            'availability': availability,
+            'availability': availability, 'source_coverage': source_coverage,
+            'observer': observer, 'collection_cost': costs, 'overhead_budget': budget,
+            'thread_scope': thread_scope, 'jetson_telemetry': telemetry,
             'gpu_utilization': None, 'emc_bandwidth': None,
-            'unimplemented': ['gpu_utilization', 'emc_bandwidth']}
+            'legacy_metric_fields': {'gpu_utilization': 'use jetson_telemetry.value_ranges.gpu_utilization_percent',
+                                     'emc_bandwidth': 'exact bandwidth not measured'},
+            'unimplemented': ['emc_bandwidth'] + (['gpu_utilization'] if telemetry['value_ranges']['gpu_utilization_percent'] is None else [])}

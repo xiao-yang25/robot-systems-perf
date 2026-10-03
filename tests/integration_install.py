@@ -63,7 +63,7 @@ def verify(wheel, output, pip_root=None):
             threads = [item for item in entities.values() if item['kind']=='thread' and item['pid']==first.pid]
             assert {'rk_thread_a','rk_thread_b'} <= {item['comm'] for item in threads}
             assert summary['quality']['peak_registered_targets'] == 2
-            assert environment['source']['package_version'] == '0.3.0'
+            assert environment['source']['package_version'] == '0.4.0'
             assert environment['source']['git_revision'] is None
             with zipfile.ZipFile(wheel) as archive:
                 for name, digest in environment['source']['sha256'].items():

@@ -14,6 +14,7 @@ from contextlib import nullcontext
 import time
 import uuid
 from .lifecycle import defer_interrupts
+from .resources import validate_resource_options
 
 
 def read_optional(path):
@@ -42,6 +43,9 @@ def number(value, label, low, high, integer=False):
 def validate(config):
     if config.get('format_version') != 1:
         raise ValueError('unsupported configuration format')
+    if 'resource_options' in config and not isinstance(config['resource_options'], dict):
+        raise ValueError('resource_options must be an object')
+    validate_resource_options(config.get('resource_options'))
     number(config['warmup_seconds'], 'warmup_seconds', 0, 3600)
     number(config['measurement_seconds'], 'measurement_seconds', 0.001, 3600)
     number(config['repetitions'], 'repetitions', 1, 100, integer=True)
@@ -292,7 +296,8 @@ def run_experiment(config, output, root=None):
         env = environment(root)
         (output / 'environment.json').write_text(json.dumps(env, indent=2) + '\n')
         if config.get('sampling_mode', 'basic') == 'basic':
-            sampler = ResourceSampler(output / 'resources.jsonl', config['resource_sampling_seconds'])
+            sampler_kwargs = {'options': config['resource_options']} if config.get('resource_options') else {}
+            sampler = ResourceSampler(output / 'resources.jsonl', config['resource_sampling_seconds'], **sampler_kwargs)
         with sampler if sampler is not None else nullcontext():
             for scenario in config['scenarios']:
                 for rep in range(1, config['repetitions'] + 1):

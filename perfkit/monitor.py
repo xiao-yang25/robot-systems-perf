@@ -16,7 +16,7 @@ import time
 from .discovery import DiscoverySelector, scan_processes
 from .lifecycle import defer_interrupts
 from .platform_probe import collect_profile
-from .resources import ResourceSampler, summarize_resources
+from .resources import ResourceSampler, summarize_resources, validate_resource_options
 
 
 LIMITS = [
@@ -36,7 +36,7 @@ def defaults():
             'resource_sampling_seconds': .5, 'discovery_interval_seconds': 1,
             'uids': [os.getuid()], 'include_names': [], 'exclude_names': [],
             'cgroup_patterns': [], 'pids': [], 'active_cpu_percent': 1,
-            'max_targets': 64, 'require_jetson': False}
+            'max_targets': 64, 'require_jetson': False, 'resource_options': {}}
 
 
 def validate_config(config):
@@ -46,6 +46,9 @@ def validate_config(config):
     if set(config) - resolved.keys():
         raise ValueError('unknown monitor configuration fields: ' + ', '.join(sorted(set(config) - resolved.keys())))
     resolved.update(copy.deepcopy(config))
+    if not isinstance(resolved['resource_options'], dict):
+        raise ValueError('resource_options must be an object')
+    validate_resource_options(resolved['resource_options'])
     if resolved['format_version'] != 1 or isinstance(resolved['format_version'], bool):
         raise ValueError('unsupported monitor configuration version')
     for key, low, high in [('duration_seconds', 1, 86400),
@@ -120,7 +123,13 @@ def write_monitor_report(output, summary):
     for item in processes:
         lines.append('| {} | {} | {} | {} |'.format(item['pid'], _cell(item.get('comm')),
                      item['cpu_percent_one_core'], item['rss_peak_bytes']))
-    lines += ['', '## 采集质量', '', '```json',
+    lines += ['', '## 采集范围与观测开销', '', '```json',
+              json.dumps({key: summary['resources'].get(key) for key in
+                          ('source_coverage', 'observer', 'collection_cost',
+                           'overhead_budget', 'thread_scope', 'jetson_telemetry')},
+                         ensure_ascii=False, indent=2), '```', '',
+              '开销预算仅评价已观测采集成本；业务受扰动仍需无采集对照。', '',
+              '## 采集质量', '', '```json',
               json.dumps(summary['quality'], ensure_ascii=False, indent=2), '```', '',
               '## 解释边界', '']
     lines.extend('- ' + limit for limit in summary['limits'])
@@ -136,6 +145,10 @@ def run_monitor(config, output, proc_root=Path('/proc')):
     start = end = None
     interrupted = None
     peak_selected = omitted_scans = skipped_process_reads = 0
+    discovery_duration_sum = discovery_duration_max = discovery_overruns = 0
+    discovery_gap_sum = discovery_gap_count = discovery_gap_max = 0
+    discovery_gap_min = previous_scan_start = None
+    skipped_discovery_deadlines = 0
     selected = {}
     summary = None
     try:
@@ -148,19 +161,37 @@ def run_monitor(config, output, proc_root=Path('/proc')):
         if config['require_jetson'] and not profile['checks']['jetson_detected']:
             raise RuntimeError('Expected native Linux ARM64 Jetson; inspect environment.json')
         selector = DiscoverySelector(config, os.sysconf('SC_CLK_TCK'))
+        sampler_kwargs = {'window_source': 'monitor_monotonic_timestamps'}
+        if config['resource_options']:
+            sampler_kwargs['options'] = config['resource_options']
         sampler = ResourceSampler(output / 'resources.jsonl', config['resource_sampling_seconds'],
-                                  window_source='monitor_monotonic_timestamps')
+                                  **sampler_kwargs)
         sampler.set_window('business-monitor', None, 'observing')
         with (output / 'discovery.jsonl').open('x') as stream:
             try:
                 with sampler:
                     start = time.monotonic_ns()
                     planned_end = start + round(config['duration_seconds'] * 1e9)
+                    discovery_interval_ns = round(config['discovery_interval_seconds'] * 1e9)
+                    next_scan_ns = start
                     while time.monotonic_ns() < planned_end:
                         if sampler.error:
                             raise RuntimeError('resource sampling failed: ' + sampler.error)
                         scan_start = time.monotonic_ns()
-                        inventory = scan_processes(proc_root, exclude_pids=(os.getpid(),))
+                        if scan_start >= planned_end:
+                            break
+                        if scan_start < next_scan_ns:
+                            time.sleep((min(next_scan_ns, planned_end) - scan_start) / 1e9)
+                            continue
+                        if previous_scan_start is not None:
+                            gap = scan_start - previous_scan_start
+                            discovery_gap_sum += gap
+                            discovery_gap_count += 1
+                            discovery_gap_max = max(discovery_gap_max, gap)
+                            discovery_gap_min = gap if discovery_gap_min is None else min(discovery_gap_min, gap)
+                        previous_scan_start = scan_start
+                        observer_children = getattr(sampler, 'owned_process_ids', lambda: ())()
+                        inventory = scan_processes(proc_root, exclude_pids=(os.getpid(),) + observer_children)
                         now = time.monotonic_ns()
                         decision = selector.update(inventory['processes'], now)
                         targets = {item['pid']: item for item in decision['targets']}
@@ -190,10 +221,16 @@ def run_monitor(config, output, proc_root=Path('/proc')):
                             'targets': decision['targets'], 'registered_pids': sorted(selected),
                             'changes': changes}, ensure_ascii=False, allow_nan=False) + '\n')
                         stream.flush()
-                        remaining = min(config['discovery_interval_seconds'],
-                                        (planned_end - time.monotonic_ns()) / 1e9)
-                        if remaining > 0:
-                            time.sleep(remaining)
+                        scan_finished = time.monotonic_ns()
+                        duration = scan_finished - scan_start
+                        discovery_duration_sum += duration
+                        discovery_duration_max = max(discovery_duration_max, duration)
+                        discovery_overruns += duration > discovery_interval_ns
+                        next_scan_ns += discovery_interval_ns
+                        if next_scan_ns <= scan_finished:
+                            missed = (scan_finished - next_scan_ns) // discovery_interval_ns + 1
+                            skipped_discovery_deadlines += missed
+                            next_scan_ns += missed * discovery_interval_ns
                     end = time.monotonic_ns()
             except KeyboardInterrupt as exc:
                 interrupted = exc
@@ -213,14 +250,47 @@ def run_monitor(config, output, proc_root=Path('/proc')):
                 warnings.append('Target cap excluded candidates; inspect selection omitted_count.')
             if skipped_process_reads:
                 warnings.append('Some proc entries vanished or were unreadable; inspect per-scan reasons.')
-            if resources['coverage']['samples'] < 2:
-                warnings.append('Insufficient complete resource snapshots; cumulative metrics unavailable.')
+            source_coverage = resources.get('source_coverage', {})
+            for source in ('system', 'process'):
+                samples = source_coverage.get(source, {}).get('samples', 0)
+                if samples < 2:
+                    warnings.append('Insufficient ' + source + ' samples; cumulative metrics unavailable.')
+            if resources.get('thread_scope', {}).get('enabled', config['resource_options'].get('collect_threads', True)):
+                thread_samples = source_coverage.get('thread', {}).get('samples', 0)
+                if thread_samples < 2:
+                    warnings.append('Insufficient thread samples; cumulative metrics unavailable.')
+            measured_processes = [item for item in (resources.get('registered_entities') or {}).values()
+                                  if item.get('kind') == 'process' and item.get('cpu_percent_one_core') is not None]
+            if status['registrations'] and not measured_processes:
+                warnings.append('No registered process has a valid CPU interval; inspect identity, permissions and coverage.')
+            if config['resource_options'].get('jetson_telemetry') and not resources.get('jetson_telemetry', {}).get('available'):
+                warnings.append('Requested Jetson telemetry has no usable sample; inspect source availability.')
+            if discovery_overruns:
+                warnings.append('Discovery scans exceeded the configured period; missed deadlines were skipped.')
+            if resources.get('collection_cost', {}).get('over_period_cycles', 0):
+                warnings.append('Resource collection cycles exceeded the configured period; inspect collection_cost.')
+            budget_configured = any(config['resource_options'].get(key) is not None for key in
+                                    ('max_cycle_fraction', 'max_observer_cpu_percent_one_core'))
+            budget_status = resources.get('overhead_budget', {}).get('status', 'not_evaluated')
+            if budget_configured and budget_status in ('exceeded', 'not_evaluated'):
+                warnings.append('Configured observer overhead budget ' + budget_status + '; inspect overhead_budget.')
             summary = {'schema_version': 1, 'kind': 'external_process_monitor', 'status': status['status'],
                        'window_start_ns': start, 'window_end_ns': end, 'config': config,
                        'quality': {'status': 'review_required' if warnings else 'observed',
                                    'scans': status['scans'], 'registrations': status['registrations'],
                                    'peak_registered_targets': peak_selected, 'scans_with_omitted_candidates': omitted_scans,
                                    'skipped_process_reads': skipped_process_reads, 'warnings': warnings,
+                                   'discovery': {'duration_ns': {'count': status['scans'],
+                                       'mean_ns': discovery_duration_sum / status['scans'] if status['scans'] else None,
+                                       'max_ns': discovery_duration_max if status['scans'] else None},
+                                       'scan_start_interval_ns': {'count': discovery_gap_count,
+                                           'mean_ns': discovery_gap_sum / discovery_gap_count if discovery_gap_count else None,
+                                           'min_ns': discovery_gap_min,
+                                           'max_ns': discovery_gap_max if discovery_gap_count else None},
+                                       'over_period_scans': discovery_overruns,
+                                       'skipped_deadlines': skipped_discovery_deadlines,
+                                       'scheduling': 'absolute_deadlines_without_catch_up',
+                                       'duration_scope': 'proc_scan_selection_registration_and_discovery_log_write'},
                                    'business_acceptance': 'not_evaluated'},
                        'resources': resources, 'limits': LIMITS}
             _json(output / 'monitor-summary.json', summary)
@@ -265,6 +335,14 @@ def main():
     parser.add_argument('--max-targets', type=int)
     parser.add_argument('--all-users', action='store_true')
     parser.add_argument('--require-jetson', action='store_true')
+    for option in ('system-interval', 'process-interval', 'thread-interval',
+                   'jetson-interval', 'max-cycle-fraction', 'max-observer-cpu-percent'):
+        parser.add_argument('--' + option, type=float)
+    parser.add_argument('--no-threads', action='store_true')
+    parser.add_argument('--thread-name', action='append')
+    parser.add_argument('--tid', type=int, action='append')
+    parser.add_argument('--skip-temperatures', action='store_true')
+    parser.add_argument('--jetson-telemetry', action='store_true')
     for option in ('include-name', 'exclude-name', 'cgroup-pattern'):
         parser.add_argument('--' + option, action='append')
     parser.add_argument('--pid', type=int, action='append')
@@ -285,6 +363,32 @@ def main():
         config['uids'] = None
     if args.require_jetson:
         config['require_jetson'] = True
+    options = copy.deepcopy(config.get('resource_options', {}))
+    if not isinstance(options, dict):
+        parser.error('resource_options must be an object')
+    for option, field in [('system_interval', 'system_sampling_seconds'),
+                          ('process_interval', 'process_sampling_seconds'),
+                          ('thread_interval', 'thread_sampling_seconds'),
+                          ('jetson_interval', 'jetson_sampling_seconds'),
+                          ('max_cycle_fraction', 'max_cycle_fraction'),
+                          ('max_observer_cpu_percent', 'max_observer_cpu_percent_one_core')]:
+        value = getattr(args, option)
+        if value is not None:
+            options[field] = value
+    for option, field in [('thread_name', 'thread_names'), ('tid', 'thread_ids')]:
+        if getattr(args, option):
+            previous = options.get(field, [])
+            if not isinstance(previous, list):
+                parser.error(field + ' must be a list')
+            options[field] = previous + getattr(args, option)
+    if args.no_threads:
+        options['collect_threads'] = False
+    if args.skip_temperatures:
+        options['skip_temperatures'] = True
+    if args.jetson_telemetry:
+        options['jetson_telemetry'] = True
+    if options:
+        config['resource_options'] = options
     def terminate(signum, frame):
         raise KeyboardInterrupt('monitor interrupted by signal ' + str(signum))
     signal.signal(signal.SIGTERM, terminate)

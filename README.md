@@ -11,7 +11,7 @@
 | C01：ROS 2 同机跨进程通信 | 发送迟到、发布调用耗时、通信/数据年龄/响应时延、实际窗口收发速率与有效载荷吞吐、交付完整性 |
 | S01：Linux 周期任务 | 启动偏差、周期误差、墙钟/CPU/响应时间、截止期违约及超期幅度 |
 | 诊断 | 分位数、直方图、时间分段、尾部消息编号、连续违约；可选数据年龄阈值 |
-| 资源 | 每核 CPU、进程/线程 CPU 与可用 schedstat、RSS、缺页、切换、cgroup 节流、温度/频率与可见功率传感器 |
+| 资源 | 每核 CPU、进程/线程 CPU 与可用 schedstat、RSS、缺页、切换、cgroup 节流、温度/频率与可见功率传感器；可选 Jetson GPU/EMC 活动遥测 |
 | 测试套件 | 参考点、大小载荷、高频、QoS、慢消费者、CPU 干扰及资源采集 ABBA 开销对照 |
 | 业务进程采集 | 自动发现现有活跃进程、按名称/PID纳入对象、动态线程与进程重启跟踪；输出资源而非消息时延 |
 
@@ -66,11 +66,13 @@ python3 -m pip install .
 之后在该环境激活的任意目录运行，无需配置文件：
 
 ```bash
-robot-perf-monitor --require-jetson --include-name '^component_container.*$' \
+robot-perf-monitor --require-jetson --include-name '^component_conta' \
   --output results/orin-business-001
 ```
 
 默认发现当前用户 CPU 活跃候选，示例名称规则额外纳入组件容器；默认同时最多64个进程，每个进程动态采集线程，可用 `--max-targets` 调到1..256。多个PID或名称可重复指定相应参数。算法语义、组件内部各节点/回调耗时需要另外关联。源码的 `python3 -m perfkit.monitor` 入口仍保留；多进程、离线安装和其他用户范围见 [业务采集指南](docs/BUSINESS_MONITOR.md)。
+
+0.4 支持系统、进程、线程独立采样周期与线程名称/TID筛选，记录采集进程CPU、阶段成本和各层覆盖。通用起点见 `configs/jetson-business-basic.json`；可选 `--jetson-telemetry`，缺失接口保留null与原因，EMC活动百分比不代表精确带宽。设计取舍和两阶段推进方式见 [架构设计](docs/ARCHITECTURE.md)。
 
 读取业务结果目录的 `MONITOR_REPORT.md`、`monitor-summary.json` 和 `discovery.jsonl`；无目标或覆盖不足会提示复核。
 
@@ -83,6 +85,7 @@ python3 -m unittest discover -s tests -v
 bash -n scripts/run-docker.sh scripts/run-native.sh
 docker run --rm --init robot-systems-perf:local python3 tests/integration_checks.py
 docker run --rm --init robot-systems-perf:local python3 tests/integration_monitor.py
+docker run --rm --init robot-systems-perf:local env PYTHONPATH=/app python3 tests/integration_resource_profiles.py
 ```
 
 Docker Desktop 的 Linux VM 结果不能作为 Jetson 基线。Orin/Thor 实机性能、AMD64 和其他 ROS 软件栈需要现场验证，具体执行证据见 [验证记录](VALIDATION.md)。
