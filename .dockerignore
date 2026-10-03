@@ -7,3 +7,4 @@ results
 __pycache__
 *.bundle
 .DS_Store
+reference-downloads
