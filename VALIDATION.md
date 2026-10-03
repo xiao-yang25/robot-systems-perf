@@ -9,6 +9,7 @@
 - SIGTERM 使采集器退出130，保存 interrupted 原始证据与报告，被观察的业务样例保持存活。摘要生成、报告写入、最后状态写入期间的真实 SIGINT 回归验证终态一致。
 - 原有6项 ROS 集成检查继续通过；采样失败、业务发现失败与既有目录拒绝覆盖不被包装成成功。
 - 独立复审通过：两处取消终态边界已修正，受审源码摘要与Linux原始运行环境记录一致；复审核对实际进程/线程快照、筛选事件、覆盖与隐私检查结果。
+- 从提交 fe93345 创建干净克隆、重新构建后，C01/S01各两轮 smoke 回归通过，每轮500个测量事件，C01无测量交付缺失，资源报告有效。原始证据保存在 `results/business-monitor-baseline-regression`。
 
 业务集成证据保留在忽略的 `results/business-monitor-verification`，原始stdout/stderr为 `results/business-monitor-final.log`；Linux单元与ROS集成最后输出分别保留在 `results/linux-unit-monitor-final-tail.txt`、`results/ros-integration-monitor-final-tail.txt`。开发验证时镜像源码版本标签为 development，实际运行源文件 SHA256 记录在各 environment.json 中，用于关联受审代码；原始证据不提交到仓库。
 
