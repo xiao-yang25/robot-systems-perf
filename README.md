@@ -20,12 +20,12 @@
 需要 Git、Docker、Bash 和宿主 Python 3。默认镜像为 Ubuntu 22.04 / ROS 2 Humble；使用 Docker 引擎原生架构，不使用跨架构仿真。
 
 ```bash
-git clone git@github.com:xiao-yang25/robot-systems-perf.git
+git clone https://github.com/xiao-yang25/robot-systems-perf.git
 cd robot-systems-perf
 ./scripts/run-docker.sh configs/suite-smoke.json results/suite-smoke suite
 ```
 
-私有仓库需要 GitHub 访问权限。短套件包含 12 个 case，通常数分钟；仅验证工具链路。每次必须使用新结果目录。原来的单次入口仍可用：
+公共仓库支持免登录 HTTPS 克隆。短套件包含 12 个 case，通常数分钟；仅验证工具链路。每次必须使用新结果目录。原来的单次入口仍可用：
 
 ```bash
 ./scripts/run-docker.sh configs/smoke.json results/smoke
