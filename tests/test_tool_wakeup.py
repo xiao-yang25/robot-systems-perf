@@ -10,6 +10,14 @@ from unittest.mock import patch
 from scripts import wakeup_compare as wakeup
 
 
+def histogram(bins=100000, overflow=0):
+    return ('T: 0 (123) P: 0 I:1000 C: %d Min: 0 Act: 1 Avg: 1 Max: 2\n# Histogram\n' % (6 + overflow)
+            + ''.join('%06d %06d\n' % (i, 1 if i == 0 else 2 if i == 1 else 3 if i == 2 else 0) for i in range(bins))
+            + '# Total: 6\n# Min Latencies: 0\n# Avg Latencies: 1\n# Max Latencies: 2\n'
+            + '# Histogram Overflows: %d\n# Histogram Overflow at cycle number:\n# Thread 0:%s\n'
+            % (overflow, ''.join(' %d' % i for i in range(overflow))))
+
+
 class WakeupComparisonTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -45,7 +53,7 @@ class WakeupComparisonTests(unittest.TestCase):
                 rows.append(f'{i},{scheduled},{scheduled+lateness},{scheduled+90},5,1')
             (folder / "samples.csv").write_text('\n'.join(rows) + '\n', encoding="utf-8")
         else:
-            (folder / "stdout.txt").write_text("# Histogram Overflow: 7\nmalformed histogram\n", encoding="utf-8")
+            (folder / "command.log").write_text(histogram(), encoding="utf-8")
         return {"returncode": 0, "command": command, "elapsed_ns": 2000000000,
                 "cpu_seconds": 0.01, "cpu_percent_one_core": 0.5}
 
@@ -72,8 +80,8 @@ class WakeupComparisonTests(unittest.TestCase):
         self.assertEqual(settings["tool_evidence"]["sha256"], hashlib.sha256(b"literal s01 binary").hexdigest())
         self.assertIsNone(records[1]["metrics"]["start_deviation_ns"])
         self.assertIsNone(records[1]["settings"]["requested_sample_count"])
-        self.assertEqual((self.calls[1][1] / "stdout.txt").read_text(),
-                         "# Histogram Overflow: 7\nmalformed histogram\n")
+        self.assertEqual(records[1]['metrics']['sampling_evidence']['samples'], 6)
+        self.assertEqual((self.calls[1][1] / "command.log").read_text(), histogram())
 
     def test_selected_cpu_wraps_both_commands_without_mutating_host(self):
         with patch.object(wakeup.os, "sched_setaffinity", create=True) as affinity_set, \
@@ -148,6 +156,31 @@ class WakeupComparisonTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'sample counts'):
                     wakeup.wakeup_runs(self.root / name, 2, 1, incomplete)
                 self.assertFalse((self.root / name / 'wakeup-01-cyclictest').exists())
+
+    def test_histogram_counts_include_overflow_without_claiming_quantiles(self):
+        path = self.root / 'histogram.log'
+        path.write_text(histogram(3, overflow=2))
+        result = wakeup.validate_cyclictest_log(path, bins=3)
+        self.assertEqual((result['samples'], result['in_range_samples'], result['overflow_samples']), (8, 6, 2))
+        path.write_text(histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0: 0 # 1 others'))
+        self.assertEqual(wakeup.validate_cyclictest_log(path, bins=3)['samples'], 8)
+
+    def test_unqualified_cyclictest_outputs_are_rejected(self):
+        valid = histogram(3)
+        cases = ['', 'Usage: cyclictest <options>\n', 'unknown format\n',
+                 histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0:'),
+                 histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0: 0 # 99 others'),
+                 valid.replace('000002 000003\n', ''), valid.replace('# Total: 6', '# Total: 7'),
+                 valid.replace('C: 6', 'C: 0'), valid.replace('# Thread 0:\n', ''),
+                 valid.replace('000001 000002', '000001 -2'), valid.replace('# Total: 6', '# Total: 6\n# Total: 6'),
+                 valid.replace('000000 000001', '000000 000000').replace('000001 000002', '000001 000000')
+                      .replace('000002 000003', '000002 000000').replace('# Total: 6', '# Total: 0').replace('C: 6', 'C: 0')]
+        path = self.root / 'invalid.log'
+        for text in cases:
+            with self.subTest(text=text[:80]):
+                path.write_text(text)
+                with self.assertRaises(RuntimeError):
+                    wakeup.validate_cyclictest_log(path, bins=3)
 
 
 if __name__ == "__main__":

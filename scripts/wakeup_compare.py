@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 from typing import Callable
@@ -17,6 +18,74 @@ from perfkit.analysis import analyze_s01
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def validate_cyclictest_log(path, bins=100000):
+    """Qualify the dense, single-thread rt-tests 2.2/2.5 histogram, not quantiles.
+
+    Upstream # Total counts in-range samples; C counts those plus overflows.
+    Quiet histogram mode omits C; if present, its counter must agree.
+    Sparse/new formats deliberately fail until independently supported.
+    """
+    started = ended = overflow_header = thread_footer = False
+    rows = population = 0
+    cycles = None
+    overflow_entries = None
+    fields = {}
+    labels = ('Total', 'Min Latencies', 'Avg Latencies', 'Max Latencies', 'Histogram Overflows')
+    with Path(path).open(encoding='utf-8') as stream:
+        for raw in stream:
+            line = raw.strip()
+            if not line:
+                continue
+            if re.search(r'(?i)usage:|unrecognized option|invalid option|unknown option|error:|traceback', line):
+                raise RuntimeError('cyclictest emitted help/error instead of qualified sampling')
+            if line.startswith('T:'):
+                match = re.fullmatch(r'T:\s*0\s+\(\s*\d+\)\s+P:\s*0\s+I:1000\s+C:\s*(\d+)\s+Min:\s*\d+\s+Act:\s*\d+\s+Avg:\s*\d+\s+Max:\s*\d+', line)
+                if not match or cycles is not None:
+                    raise RuntimeError('cyclictest thread summary missing or unsupported')
+                cycles = int(match[1])
+            elif line == '# Histogram':
+                if started:
+                    raise RuntimeError('duplicate cyclictest histogram')
+                started = True
+            elif started and not ended and not line.startswith('#'):
+                match = re.fullmatch(r'(\d+)\s+(\d+)', line)
+                if not match or int(match[1]) != rows or rows >= bins:
+                    raise RuntimeError('cyclictest histogram truncated, reordered or unsupported')
+                rows += 1
+                population += int(match[2])
+            elif started and line.startswith('#'):
+                ended = True
+                match = re.fullmatch(r'# (' + '|'.join(labels) + r'):\s*(\d+)', line)
+                if match:
+                    if match[1] in fields:
+                        raise RuntimeError('duplicate cyclictest histogram counter')
+                    fields[match[1]] = int(match[2])
+                elif line == '# Histogram Overflow at cycle number:':
+                    if overflow_header:
+                        raise RuntimeError('duplicate cyclictest overflow footer')
+                    overflow_header = True
+                elif (match := re.fullmatch(r'# Thread 0:((?:\s+\d+)*)(?:\s+#\s+(\d+)\s+others)?', line)):
+                    if thread_footer or not overflow_header:
+                        raise RuntimeError('cyclictest overflow footer invalid')
+                    thread_footer = True
+                    overflow_entries = len(match[1].split()) + int(match[2] or 0)
+                else:
+                    raise RuntimeError('cyclictest histogram format unsupported')
+            elif started:
+                raise RuntimeError('unexpected cyclictest histogram output')
+    if (rows != bins or set(fields) != set(labels) or not overflow_header or not thread_footer
+            or fields.get('Total', 0) <= 0 or population != fields['Total']
+            or overflow_entries != fields.get('Histogram Overflows')
+            or (cycles is not None and cycles != population + fields['Histogram Overflows'])):
+        raise RuntimeError('cyclictest sampling evidence missing, zero or inconsistent')
+    return {'validated': True, 'format': 'dense_single_thread_rt_tests_2_2_2_5',
+            'histogram_bins': rows, 'in_range_samples': population,
+            'samples': population + fields['Histogram Overflows'],
+            'sample_count_source': 'histogram Total + Histogram Overflows',
+            'thread_summary_cycles': cycles,
+            'overflow_samples': fields['Histogram Overflows'], 'bucket_width_us': 1}
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -149,7 +218,9 @@ def wakeup_runs(output: Path, seconds: int, repetitions: int,
                     },
                 }
             else:
+                qualification = validate_cyclictest_log(folder / 'command.log')
                 metrics = {
+                    "sampling_evidence": qualification,
                     "start_deviation_ns": None,
                     "metric_boundary": "cyclictest timer wakeup latency reported in microseconds in raw histogram",
                     "population": "duration-limited cyclictest samples; count may differ from S01",

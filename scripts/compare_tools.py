@@ -13,13 +13,39 @@ import uuid
 import xml.etree.ElementTree as ET
 
 try:
-    from .comparison_common import ROOT, defer_interrupts, execute, fingerprint, launch, write_json
+    from .comparison_common import ROOT, CommandError, defer_interrupts, execute, fingerprint, launch, write_json
 except ImportError:
-    from comparison_common import ROOT, defer_interrupts, execute, fingerprint, launch, write_json
+    from comparison_common import ROOT, CommandError, defer_interrupts, execute, fingerprint, launch, write_json
 from perfkit.resources import parse_task_stat
 from perfkit.runner import environment, install_signal_handler
 from tests.integration_resource_profiles import PROGRAM
 from tests.process_helpers import OwnedProcesses
+
+
+def validate_tool_probe(tool, text):
+    lines = text.strip().splitlines()
+    if not lines:
+        raise RuntimeError('empty tool probe output')
+    if re.search(r'(?im)^(?:\s*(?:Traceback\b|error\b|fatal\b)|.*(?:unrecognized|unknown|invalid) option\b|.*error while loading shared libraries\b)', text):
+        raise RuntimeError('tool probe reported an error')
+    patterns = {'pidstat': r'sysstat version \d+(?:\.\d+)+',
+                'cyclictest': r'cyclictest V \d+(?:\.\d+)+',
+                'lttng': r'.*lttng.*\(LTTng Trace Control\) \d+(?:\.\d+)+.*',
+                'babeltrace': r'BabelTrace Trace Viewer and Converter \d+(?:\.\d+)+'}
+    if not re.fullmatch(patterns[tool], lines[0]):
+        raise RuntimeError('unrecognized tool version/help output')
+    if tool in ('cyclictest', 'babeltrace') and not re.search(r'(?im)^usage\s*:', text):
+        raise RuntimeError('missing recognized help output')
+    if tool == 'babeltrace':
+        formats = re.search(r'(?im)^Formats available:\s*([^\n]+)\.\s*$', text)
+        if (not formats or not {'ctf', 'text'}.issubset(set(formats[1].split(', ')))
+                or any(not re.search(r'--' + flag + r'\b', text)
+                       for flag in ('help', 'input-format', 'output-format', 'fields', 'clock-cycles'))):
+            raise RuntimeError('incomplete Babeltrace help or missing CTF/text formats')
+    if tool == 'cyclictest':
+        for flag in ('default-system', 'policy', 'priority', 'threads', 'clock', 'interval', 'duration', 'quiet', 'histogram'):
+            if not re.search(r'--' + flag + r'\b', text):
+                raise RuntimeError('cyclictest required option missing: --' + flag)
 
 
 def preflight(mode, output, cpu=None, pids=()):
@@ -68,13 +94,21 @@ def preflight(mode, output, cpu=None, pids=()):
                 checks.append({'tool': label, 'available': False, 'reason': str(error)})
     for index, check in enumerate(list(checks)):
         if check.get('available') and check['tool'] in ('pidstat', 'cyclictest', 'lttng', 'babeltrace'):
-            flag = '-V' if check['tool'] == 'pidstat' else '--help' if check['tool'] == 'cyclictest' else '--version'
+            flag = '-V' if check['tool'] == 'pidstat' else '--help' if check['tool'] in ('cyclictest', 'babeltrace') else '--version'
             command = [check['path'], flag]
-            # Version probe is evidence; some cyclictest versions return nonzero.
             try:
-                execute(command, output / ('version-%d' % index), 10)
-            except RuntimeError as error:
-                check['version_probe_reason'] = str(error)
+                folder = output / ('version-%d' % index)
+                try:
+                    result = execute(command, folder, 10)
+                except CommandError as error:
+                    # Only recognized --help exit 1 is allowed; 127 never is.
+                    if check['tool'] not in ('cyclictest', 'babeltrace') or error.record['returncode'] != 1:
+                        raise
+                    result = error.record
+                validate_tool_probe(check['tool'], (folder / 'command.log').read_text())
+                check['version_probe'] = result
+            except (RuntimeError, OSError, TimeoutError, UnicodeError) as error:
+                check.update(available=False, reason='tool probe failed: ' + str(error))
     if mode == 'trace':
         probe = "import ctypes,sys; lib=ctypes.CDLL('lib'+sys.argv[1]+'.so'); f=lib.rmw_get_implementation_identifier; f.restype=ctypes.c_char_p; actual=f(); print(actual.decode()); sys.exit(0 if actual==sys.argv[1].encode() else 1)"
         for rmw in ('rmw_fastrtps_cpp', 'rmw_cyclonedds_cpp'):

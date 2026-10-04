@@ -1,0 +1,42 @@
+BabelTrace Trace Viewer and Converter 1.5.8
+
+usage : babeltrace [OPTIONS] FILE...
+
+  FILE                           Input trace file(s) and/or directory(ies)
+                                     (space-separated)
+  -w, --output OUTPUT            Output trace path (default: stdout)
+
+  -i, --input-format FORMAT      Input trace format (default: ctf)
+  -o, --output-format FORMAT     Output trace format (default: text)
+
+  -h, --help                     This help message
+  -l, --list                     List available formats
+  -v, --verbose                  Verbose mode
+                                 (or set BABELTRACE_VERBOSE environment variable)
+  -d, --debug                    Debug mode
+                                 (or set BABELTRACE_DEBUG environment variable)
+      --no-delta                 Do not print time delta between consecutive events
+  -n, --names name1<,name2,...>  Print field names:
+                                     (payload OR args OR arg)
+                                     none, all, scope, header, (context OR ctx)
+                                        (default: payload,context)
+  -f, --fields name1<,name2,...> Print additional fields:
+                                     all, trace, trace:hostname, trace:domain,
+                                     trace:procname, trace:vpid, loglevel, emf, callsite.
+                                     (default: trace:hostname,trace:procname,trace:vpid)
+      --clock-cycles             Timestamp in cycles
+      --clock-offset seconds     Clock offset in seconds
+      --clock-offset-ns ns       Clock offset in nanoseconds
+      --clock-seconds            Print the timestamps as [sec.ns]
+                                 (default is: [hh:mm:ss.ns])
+      --clock-date               Print clock date
+      --clock-gmt                Print clock in GMT time zone (default: local time zone)
+      --clock-force-correlate    Assume that clocks are inherently correlated
+                                 across traces.
+      --stream-intersection      Only print events when all streams are active.
+      --debug-info-dir           Directory in which to look for debugging information
+                                 files. (default: /usr/lib/debug/)
+      --debug-info-target-prefix Directory to use as a prefix for executable lookup
+      --debug-info-full-path     Show full debug info source and binary paths (if available)
+
+Formats available: ctf, dummy, lttng-live, ctf-metadata, text.

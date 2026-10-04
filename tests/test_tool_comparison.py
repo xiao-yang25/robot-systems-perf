@@ -15,8 +15,22 @@ from scripts import comparison_common as common
 from scripts import compare_tools as compare
 from tests.process_helpers import OwnedProcesses
 
+BABELTRACE_HELP = (Path(__file__).parent / 'fixtures/babeltrace-1.5.8-help.txt').read_text()
+
 
 class ComparisonEvidenceTests(unittest.TestCase):
+    def test_tool_probe_requires_clean_recognized_version_and_help(self):
+        compare.validate_tool_probe('pidstat', 'sysstat version 12.8.1\n')
+        compare.validate_tool_probe('babeltrace', BABELTRACE_HELP)
+        for tool, text in [('pidstat', ''), ('pidstat', 'unrecognized banner'),
+                           ('babeltrace', 'BabelTrace Trace Viewer and Converter 1.5.8\n'),
+                           ('babeltrace', 'BabelTrace Trace Viewer and Converter 1.5.8\nusage : babeltrace [OPTIONS]\n'),
+                           ('babeltrace', BABELTRACE_HELP + 'Error parsing options.\n'),
+                           ('pidstat', 'sysstat version 12.8.1\nError while loading shared libraries'),
+                           ('pidstat', 'sysstat version 12.8.1\nTraceback (most recent call last):')]:
+            with self.subTest(tool=tool, text=text), self.assertRaises(RuntimeError):
+                compare.validate_tool_probe(tool, text)
+
     def test_pid_reuse_and_reset_cannot_be_compared(self):
         start = {'starttime_ticks': 10, 'utime_ticks': 20, 'stime_ticks': 3,
                  'rss_pages': 1, 'num_threads': 2}
