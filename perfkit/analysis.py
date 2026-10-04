@@ -313,6 +313,7 @@ def analyze_c01(sender_path: Path, receiver_path: Path,
         'callback_cpu_time_ns': 'thread CPU duration during callback; first valid delivery',
         'release_lateness_ns': 'generated_ns - scheduled_ns; all measured sends',
         'publish_call_time_ns': 'publish_return_ns - publish_ns; all measured sends',
+        'generation_to_publish_ns': 'publish_ns - generated_ns; all measured sends',
         'publish_period_error_ns': 'actual publish interval - corresponding scheduled interval; signed',
         'absolute_publish_period_error_ns': 'absolute actual publish interval error',
         'response_time_ns': 'finish_ns - scheduled_ns; first valid delivery',
@@ -340,6 +341,7 @@ def analyze_c01(sender_path: Path, receiver_path: Path,
     for row in planned_rows:
         events['release_lateness_ns'].append(_event(row, row['generated_ns'] - row['scheduled_ns'], 'generated_ns'))
         events['publish_call_time_ns'].append(_event(row, row['publish_return_ns'] - row['publish_ns'], 'publish_return_ns'))
+        events['generation_to_publish_ns'].append(_event(row, row['publish_ns'] - row['generated_ns'], 'publish_ns'))
     for a, b in zip(planned_rows, planned_rows[1:]):
         error = (b['publish_ns'] - a['publish_ns']) - (b['scheduled_ns'] - a['scheduled_ns'])
         events['publish_period_error_ns'].append(_event(b, error, 'publish_ns',
@@ -355,6 +357,22 @@ def analyze_c01(sender_path: Path, receiver_path: Path,
     age_events = [{'seq': event['seq'], 'data_age_ns': event['value_ns'],
                    'boundaries': event['boundaries']} for event in events['data_age_ns']
                   if max_data_age_ns is not None and event['value_ns'] > max_data_age_ns]
+    diagnostics = _diagnostics(events, boundaries, _deadline_diagnostics(
+        planned_rows, {seq: row['finish_ns'] for seq, row in first_valid.items()}, deadline_ns))
+    diagnostics['response_tail_decomposition'] = [
+        {'seq': event['seq'], 'boundaries': event['boundaries'],
+         'response_time_ns': event['value_ns'],
+         'release_lateness_ns': event['boundaries']['generated_ns'] - event['boundaries']['scheduled_ns'],
+         'generation_to_publish_ns': event['boundaries']['publish_ns'] - event['boundaries']['generated_ns'],
+         'publish_to_callback_ns': event['boundaries']['receive_ns'] - event['boundaries']['publish_ns'],
+         'callback_wall_time_ns': event['boundaries']['finish_ns'] - event['boundaries']['receive_ns'],
+         'publish_call_time_ns': event['boundaries']['publish_return_ns'] - event['boundaries']['publish_ns'],
+         'callback_cpu_time_ns': first_valid[event['seq']]['cpu_ns'],
+         'received_in_drain': window['end_ns'] is not None and event['boundaries']['receive_ns'] >= window['end_ns']}
+        for event in diagnostics['tail_events']['response_time_ns']]
+    diagnostics['decomposition_scope'] = ('The first four stages sum to response time. Publish call and callback CPU '
+        'overlap other stages; never add them again. Publish-to-callback includes middleware and executor '
+        'waiting; it cannot attribute transport, fragmentation or retransmission. Same-host clock assumed.')
     return {
         "scenario": "C01", "quantile_method": QUANTILE_METHOD,
         "clock_assumption": "same-host monotonic_ns origin; not provable from CSV",
@@ -398,8 +416,7 @@ def analyze_c01(sender_path: Path, receiver_path: Path,
                                    'no_delivered_samples' if not first_valid else
                                    'expired' if age_events else 'met',
                                'events': age_events},
-        "diagnostics": _diagnostics(events, boundaries, _deadline_diagnostics(
-            planned_rows, {seq: row['finish_ns'] for seq, row in first_valid.items()}, deadline_ns)),
+        "diagnostics": diagnostics,
     }
 
 
@@ -533,6 +550,8 @@ def write_report(output_root: Path, config: dict, environment: dict,
             ('诊断：样本、直方图、时间序列与尾部事件', metrics.get('diagnostics')),
             ('资源采样', result.get('resources')),
             ('测量质量', result.get('quality')),
+            ('分项验收状态', result.get('acceptance')),
+            ('实际运行库与DDS配置证据', result.get('runtime_evidence')),
         ):
             if data is not None:
                 lines.extend(['', f'### {title}', '', '```json',

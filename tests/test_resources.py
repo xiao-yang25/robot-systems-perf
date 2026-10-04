@@ -63,6 +63,22 @@ def sample(now, user=10, wait=100, start=100):
 
 
 class ResourcesTest(unittest.TestCase):
+    def test_stat_selected_fields_and_unused_kernel_tail(self):
+        # Field numbers themselves are distinct counters; expectations below
+        # come from the Linux stat field contract, not parser-produced output.
+        record = '73 (worker ) busy) S ' + ' '.join(str(i) for i in range(4, 53))
+        expected = {'pid': 73, 'comm': 'worker ) busy', 'state': 'S',
+                    'minor_faults': 10, 'major_faults': 12, 'utime_ticks': 14,
+                    'stime_ticks': 15, 'priority': 18, 'nice': 19, 'num_threads': 20,
+                    'starttime_ticks': 22, 'rss_pages': 24, 'processor': 39,
+                    'rt_priority': 40, 'policy': 41}
+        self.assertEqual(r.parse_task_stat(record), expected)
+        minimum = '73 (worker ) busy) S ' + ' '.join(str(i) for i in range(4, 42))
+        self.assertEqual(r.parse_task_stat(minimum), expected)
+        self.assertEqual(r.parse_task_stat(minimum+' unused trailing text'), expected)
+        with self.assertRaises(ValueError):
+            r.parse_task_stat('73 (worker) S '+' '.join(str(i) for i in range(4, 41)))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

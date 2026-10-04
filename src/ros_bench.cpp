@@ -1,5 +1,6 @@
 #include "common.hpp"
 #include <rclcpp/rclcpp.hpp>
+#include "runtime_evidence.hpp"
 #include <std_msgs/msg/byte_multi_array.hpp>
 #include <iostream>
 #include <memory>
@@ -34,6 +35,10 @@ int main(int argc, char **argv) {
     if (reliability != "reliable" && reliability != "best_effort") throw std::runtime_error("invalid reliability");
     const auto out_path = args.text("--output");
     const auto topic = args.text("--topic");
+    const auto evidence_arg = args.values.find("--runtime-evidence");
+    const auto evidence_prefix = evidence_arg == args.values.end() ? std::string() : evidence_arg->second;
+    if (evidence_arg != args.values.end() && evidence_prefix.empty())
+      throw std::runtime_error("empty runtime evidence prefix");
     // Program arguments are not ROS arguments; initialize without CLI parsing.
     rclcpp::init(0, nullptr);
     auto node = std::make_shared<rclcpp::Node>("embodied_perf_" + role);
@@ -52,6 +57,9 @@ int main(int argc, char **argv) {
       std_msgs::msg::ByteMultiArray message;
       message.data.resize(header_bytes + size_t(payload), uint8_t(0xA5));
       std::vector<Sent> sent; sent.reserve(size_t(count + warmup));
+      const auto runtime = evidence_prefix.empty() ? ep::RuntimeIdentity{} : ep::runtime_identity(*pub);
+      ep::runtime_evidence(evidence_prefix, role, "start", runtime,
+                           "discovery_complete_message_allocated_before_schedule", rclcpp::ok());
       const auto base = ep::clock_ns() + 100000000LL;
       for (int64_t i = 0; i < count + warmup; ++i) {
         if (!rclcpp::ok()) throw std::runtime_error("publisher interrupted before completion");
@@ -70,6 +78,8 @@ int main(int argc, char **argv) {
       for (auto &s : sent)
         out << s.seq << ',' << s.scheduled << ',' << s.generated << ',' << s.publish << ',' << s.returned << ',' << s.measured << '\n';
       out.close();
+      ep::runtime_evidence(evidence_prefix, role, "end", runtime,
+                           "publish_loop_completed_csv_written", rclcpp::ok());
     } else {
       auto delay = args.number("--callback-delay-ns", 0, 1000000000);
       const size_t capacity = size_t(count + warmup) * 2 + 16;
@@ -91,6 +101,9 @@ int main(int argc, char **argv) {
           if (received.size() < capacity) received.push_back({seq, receive, finish, cpu_end - cpu_start, valid});
           else ++overflow;
         });
+      const auto runtime = evidence_prefix.empty() ? ep::RuntimeIdentity{} : ep::runtime_identity(*sub);
+      ep::runtime_evidence(evidence_prefix, role, "start", runtime,
+                           "subscription_created_before_ready", rclcpp::ok());
       auto ready = ep::output(args.text("--ready-file")); ready << "ready\n"; ready.close();
       rclcpp::spin(node);
       auto out = ep::output(out_path);
@@ -98,6 +111,8 @@ int main(int argc, char **argv) {
       for (auto &r : received)
         out << r.seq << ',' << r.receive << ',' << r.finish << ',' << r.cpu << ',' << r.valid << '\n';
       out.close();
+      ep::runtime_evidence(evidence_prefix, role, "end", runtime,
+                           "spin_returned_csv_written", rclcpp::ok());
       if (overflow || malformed) throw std::runtime_error("receiver recording overflow or malformed messages: " + std::to_string(overflow) + "," + std::to_string(malformed));
     }
     rclcpp::shutdown();

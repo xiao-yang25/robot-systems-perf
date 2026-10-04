@@ -15,6 +15,8 @@ import time
 import uuid
 from .lifecycle import defer_interrupts
 from .resources import validate_resource_options
+from .acceptance import evaluate_run, validate_limits
+from .evidence import declared_dds_config, summarize_runtime_evidence
 
 
 def read_optional(path):
@@ -63,6 +65,7 @@ def validate(config):
         raise ValueError('at least one scenario required')
     seen = set()
     for s in config['scenarios']:
+        validate_limits(s.get('acceptance_limits', {}))
         if s['id'] not in ('C01', 'S01') or s['id'] in seen:
             raise ValueError('only one configuration per C01/S01; compare in separate runs')
         seen.add(s['id'])
@@ -174,12 +177,14 @@ def run_one(root, folder, config, scenario, sampler=None):
     child_env['ROS_DOMAIN_ID'] = str(10 + uuid.uuid4().int % 180)
     child_env['ROS_LOCALHOST_ONLY'] = '1'
     child_env.setdefault('RMW_IMPLEMENTATION', 'rmw_fastrtps_cpp')
+    dds_config = declared_dds_config(child_env) if scenario['id'] == 'C01' else None
     (folder / 'resolved.json').write_text(json.dumps({
         'measured_count': count, 'warmup_count': warmup, 'period_ns': period,
         'deadline_ns': deadline, 'ros_domain_id': child_env['ROS_DOMAIN_ID'],
         'effective_drain_seconds': effective_drain if scenario['id'] == 'C01' else None,
         'ros_localhost_only': child_env['ROS_LOCALHOST_ONLY'],
         'rmw_implementation': child_env['RMW_IMPLEMENTATION'],
+        'declared_dds_config': dds_config,
         'release_policy': 'absolute_schedule_with_catch_up_no_skipping'
     }, indent=2) + '\n')
     processes = []
@@ -201,6 +206,7 @@ def run_one(root, folder, config, scenario, sampler=None):
                                '--depth', scenario['qos_depth'], '--reliability', scenario['reliability']]
             subscriber = launch([root / 'build/ros_bench', '--role', 'subscriber', *shared,
                                 '--callback-delay-ns', scenario['callback_delay_us'] * 1000,
+                                '--runtime-evidence', folder / 'subscriber-runtime',
                                 '--ready-file', folder / 'ready', '--output', folder / 'receiver.csv'],
                                folder / 'subscriber.log', child_env, role='subscriber')
             ready_end = time.monotonic() + 15
@@ -209,6 +215,7 @@ def run_one(root, folder, config, scenario, sampler=None):
                     raise RuntimeError('subscriber startup failed; see subscriber.log')
                 time.sleep(0.02)
             publisher = launch([root / 'build/ros_bench', '--role', 'publisher', *shared,
+                               '--runtime-evidence', folder / 'publisher-runtime',
                                '--output', folder / 'sender.csv'], folder / 'publisher.log', child_env, role='publisher')
             if publisher.wait(timeout=timeout) != 0:
                 raise RuntimeError('publisher failed; see publisher.log')
@@ -229,6 +236,12 @@ def run_one(root, folder, config, scenario, sampler=None):
                                   max_data_age_ns=scenario['max_data_age_us'] * 1000 if scenario.get('max_data_age_us') is not None else None)
             if metrics['counts']['measured_sent'] != count or metrics['counts']['warmup_sent'] != warmup:
                 raise RuntimeError('publisher manifest does not match planned sample count')
+            # Hash after both timed processes stop. Never inspect external
+            # process maps or add library hashing inside the event loop.
+            runtime = {'publisher': summarize_runtime_evidence(folder / 'publisher-runtime'),
+                       'subscriber': summarize_runtime_evidence(folder / 'subscriber-runtime'),
+                       'declared_dds_config': dds_config, 'transport_verified': False}
+            (folder / 'runtime-evidence.json').write_text(json.dumps(runtime, indent=2, allow_nan=False) + '\n')
         else:
             proc = launch([root / 'build/periodic_bench', *common, '--work-ns', scenario['work_us'] * 1000,
                           '--output', folder / 'samples.csv'], folder / 'periodic.log', role='periodic-worker')
@@ -323,6 +336,9 @@ def run_experiment(config, output, root=None):
                     results.append({'scenario': scenario['id'], 'repetition': rep, 'metrics': metrics,
                                     'quality': measurement_quality(metrics, folder, config, scenario),
                                     'raw_directory': str(folder.relative_to(output))})
+                    evidence_file = folder / 'runtime-evidence.json'
+                    if evidence_file.is_file():
+                        results[-1]['runtime_evidence'] = json.loads(evidence_file.read_text())
                     status['completed_runs'] += 1
                     print(f"Completed {scenario['id']} repetition {rep}", flush=True)
         if sampler is not None and sampler.error:
@@ -332,6 +348,8 @@ def run_experiment(config, output, root=None):
             result['resources'] = (summarize_resources(output / 'resources.jsonl', window['start_ns'], window['end_ns'])
                                    if sampler is not None and window['start_ns'] is not None and window['end_ns'] is not None
                                    else {'available': False, 'reason': 'sampler disabled or measurement window unavailable'})
+            scenario = next(s for s in config['scenarios'] if s['id'] == result['scenario'])
+            result['acceptance'] = evaluate_run(result, scenario)
         from .analysis import write_report
         write_report(output, config, env, results)
         status['status'] = 'complete'

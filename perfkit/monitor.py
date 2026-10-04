@@ -15,6 +15,7 @@ import time
 
 from .discovery import DiscoverySelector, scan_processes
 from .lifecycle import defer_interrupts
+from .acceptance import resource_state
 from .platform_probe import collect_profile
 from .resources import ResourceSampler, summarize_resources, validate_resource_options, _Costs
 
@@ -153,6 +154,8 @@ def write_monitor_report(output, summary):
               '开销预算仅评价已观测采集成本；业务受扰动仍需无采集对照。', '',
               '## 采集质量', '', '```json',
               json.dumps(summary['quality'], ensure_ascii=False, indent=2), '```', '',
+              '## 分项验收', '', '```json',
+              json.dumps(summary.get('acceptance', {}), ensure_ascii=False, indent=2), '```', '',
               '## 解释边界', '']
     lines.extend('- ' + limit for limit in summary['limits'])
     (output / 'MONITOR_REPORT.md').write_text('\n'.join(lines) + '\n')
@@ -343,7 +346,12 @@ def run_monitor(config, output, proc_root=Path('/proc')):
                                        'scheduling': 'absolute_deadlines_without_catch_up',
                                        'duration_scope': 'proc_scan_selection_registration_and_discovery_log_write'},
                                    'business_acceptance': 'not_evaluated'},
-                       'resources': resources, 'limits': LIMITS}
+                       'resources': resources,
+                       'acceptance': {'resources': resource_state(resources),
+                           'collector_budget': resources['overhead_budget'],
+                           'business_chain': {'status': 'not_evaluated',
+                               'reason': 'no correlated business events, input evidence or application deadline'}},
+                       'limits': LIMITS}
             _json(output / 'monitor-summary.json', summary)
             write_monitor_report(output, summary)
         if interrupted:

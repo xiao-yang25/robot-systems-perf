@@ -1,0 +1,35 @@
+{
+  "format_version": 1,
+  "purpose": "C01_large_payload_tail_diagnostic_not_business_acceptance",
+  "warmup_seconds": 5,
+  "measurement_seconds": 60,
+  "repetitions": 5,
+  "drain_seconds": 3,
+  "resource_sampling_seconds": 0.2,
+  "quality_limits": {
+    "min_samples": 1000,
+    "max_release_late_fraction": 0.01
+  },
+  "resource_options": {
+    "skip_temperatures": true,
+    "max_cycle_fraction": null,
+    "max_observer_cpu_percent_one_core": null
+  },
+  "scenarios": [
+    {
+      "id": "C01",
+      "frequency_hz": 30,
+      "payload_bytes": 1048576,
+      "qos_depth": 64,
+      "reliability": "reliable",
+      "callback_delay_us": 0,
+      "deadline_us": null,
+      "cpu_interference_workers": 0,
+      "acceptance_limits": {
+        "max_deadline_miss_fraction": null,
+        "max_data_age_expired_fraction": null
+      },
+      "max_data_age_us": null
+    }
+  ]
+}

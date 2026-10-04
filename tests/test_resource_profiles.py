@@ -87,6 +87,11 @@ class ProfileTests(unittest.TestCase):
                 'cadence_ns': 100, 'duration_ns': 30, 'phase_costs_ns': {'encode': 10}}
         costs_path = self.root / 'resources-costs.jsonl'
         costs_path.write_text(json.dumps(cost) + '\n')
+        self.assertEqual(self.summarize([row])['overhead_budget']['status'], 'not_evaluated')
+        completion = {'schema_version': 1, 'record_type': 'terminal_completion',
+                      'completion': {key: cost[key] for key in
+                        ('cycle_id', 'start_ns', 'end_ns', 'cadence_ns', 'duration_ns')}}
+        costs_path.write_text(json.dumps(cost) + '\n' + json.dumps(completion) + '\n')
         result = self.summarize([row])
         self.assertEqual(result['overhead_budget']['status'], 'exceeded')
         self.assertEqual(result['collection_cost']['phase_costs_ns']['encode']['mean_ns'], 10)

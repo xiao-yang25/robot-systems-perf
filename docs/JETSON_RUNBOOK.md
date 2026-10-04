@@ -32,8 +32,11 @@ REQUIRE_JETSON=1 ENVIRONMENT_KIND=jetson-container \
 - deadline_us 与 max_data_age_us（仅 C01）。截止期锚为计划释放时刻；未配置时不判断业务达标。套件 S01 的 1000 us 是探索示例，C01 默认 null。
 - quality_limits.min_samples 与 max_release_late_fraction。默认 1000 样本及“迟到超过一个周期的比例不超过 1%”是可修改的测量质量起点，不是业务时限。压力 case 超出时保留结果并报告，不能静默删除。
 - sampler_comparisons 的 max_p99_increase_percent。默认 null，填入事先约定的采集开销预算后才给预算评价。只对比资源采样增量，双方仍保留 C++ 时间戳记录。
+- 各场景 `acceptance_limits` 的容许期限违约/超龄比例；只有期限不足以定义验收。未明确上限时用 [待填模板与分项状态](ACCEPTANCE.md)，不要把完成状态当通过。
 
 资源采集对照四个 case 必须保持同一负载和要求，只改变 sampling_mode，执行顺序为 minimal/basic/basic/minimal。程序保留各轮 P99，并计算这些逐轮值的中位数差异；不把它称为合并样本 P99，也不将一次差异归为确定采集开销。
+
+可设置 `repeat_blocks` 重复连续ABBA；预算按每组有效性及最坏组评价。下一轮优先运行三组待填套件、五轮大包尾部诊断，查看实际RMW/QoS、库摘要、释放/publish/回调各段；执行方式与解释边界见 [验收与尾部诊断](ACCEPTANCE.md)。周期成本预算改用包含成本日志flush的新口径，旧日志不补写完成证据。
 
 ## 网络与资源约束
 

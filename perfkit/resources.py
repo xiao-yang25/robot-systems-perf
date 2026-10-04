@@ -101,18 +101,18 @@ def parse_task_stat(text):
     if left < 0 or right <= left:
         raise ValueError('invalid task stat comm')
     pid = int(text[:left].strip())
-    fields = text[right + 1:].split()  # starts at field 3, state
+    # Only fields through 41 are used. Keep each selected token separate while
+    # avoiding allocations for the unused trailing kernel fields.
+    fields = text[right + 1:].split(maxsplit=39)  # starts at field 3, state
     if len(fields) < 39:
         raise ValueError('short task stat')
-    def number(field):
-        return int(fields[field - 3])
     return {'pid': pid, 'comm': text[left + 1:right], 'state': fields[0],
-            'minor_faults': number(10), 'major_faults': number(12),
-            'utime_ticks': number(14), 'stime_ticks': number(15),
-            'priority': number(18), 'nice': number(19),
-            'num_threads': number(20), 'starttime_ticks': number(22),
-            'rss_pages': number(24), 'processor': number(39),
-            'rt_priority': number(40), 'policy': number(41)}
+            'minor_faults': int(fields[7]), 'major_faults': int(fields[9]),
+            'utime_ticks': int(fields[11]), 'stime_ticks': int(fields[12]),
+            'priority': int(fields[15]), 'nice': int(fields[16]),
+            'num_threads': int(fields[17]), 'starttime_ticks': int(fields[19]),
+            'rss_pages': int(fields[21]), 'processor': int(fields[36]),
+            'rt_priority': int(fields[37]), 'policy': int(fields[38])}
 
 
 def _read(path, parser=lambda text: text.strip()):
@@ -614,6 +614,7 @@ class ResourceSampler:
             cadence_ns = max(1, round(self.cadence * 1e9))
             planned = time.monotonic_ns()
             next_due = {name: planned for name in periods}
+            completion = None
             while not self._stop.is_set():
                 before, cpu_before = time.monotonic_ns(), time.thread_time_ns()
                 due = {name for name, deadline in next_due.items() if before >= deadline}
@@ -641,13 +642,24 @@ class ResourceSampler:
                              encode=encode_cpu_end - encode_cpu,
                              resource_write_flush=write_cpu_end - encode_cpu_end),
                          'scope': 'sampler_collection_encoding_resource_write; excludes_cost_record_write'}
+                costs['previous_cycle_completion'] = completion
                 self._cost_stream.write(json.dumps(costs, allow_nan=False, separators=(',', ':')) + '\n')
                 self._cost_stream.flush()
                 finished = time.monotonic_ns()
+                completion = {'cycle_id': self._cycle_id, 'start_ns': before, 'end_ns': finished,
+                              'cadence_ns': cadence_ns, 'duration_ns': finished - before,
+                              'thread_cpu_ns': time.thread_time_ns() - cpu_before}
                 for name in due:
                     next_due[name] += max(1, (finished - next_due[name]) // periods[name] + 1) * periods[name]
                 planned += max(1, (finished - planned) // cadence_ns + 1) * cadence_ns
                 self._stop.wait(max(0, (planned - time.monotonic_ns()) / 1e9))
+            if completion is not None:
+                # Persist the last completion after the measured pipeline has
+                # ended. This terminal bookkeeping write is outside its scope.
+                self._cost_stream.write(json.dumps({'schema_version': 1,
+                    'record_type': 'terminal_completion', 'completion': completion},
+                    separators=(',', ':')) + '\n')
+                self._cost_stream.flush()
         except Exception as exc:
             self.error = type(exc).__name__ + ': ' + str(exc)
 
@@ -739,24 +751,63 @@ def _finish_ranges(ranges):
 
 
 def summarize_costs(path, start_ns, end_ns):
-    """Cost log excludes its own write; CPU observer covers the whole parent process."""
+    """Keep legacy phase costs plus completions through the cost-record flush."""
     result = {'available': False, 'reason': 'cost log absent or no complete cycles in window',
               'cycles': 0, 'over_period_cycles': 0, 'cycle_fraction_max': None,
               'phase_costs_ns': {}, 'phase_thread_cpu_ns': {},
+              'completed_cycles': 0, 'full_over_period_cycles': 0, 'full_cycle_fraction_max': None,
+              'full_pipeline_scope': 'sampler read, encoding, resource and cost-record flush; '
+                  'excludes scheduling bookkeeping and terminal completion write; discovery has separate wall cost',
               'scope': 'sampler collection, encoding, resource write/flush; excludes cost-log write and tegrastats child CPU'}
     if not path.exists():
         return result
     phases, cpu_phases, previous = _Costs(), _Costs(), None
+    pending, previous_completion, terminated = None, None, False
     with path.open(encoding='utf-8') as stream:
         for number, line in enumerate(stream, 1):
             try:
                 item = json.loads(line)
+                if terminated:
+                    raise ValueError('record after terminal completion')
+                terminal = item.get('record_type') == 'terminal_completion'
+                completion = item.get('completion') if terminal else item.get('previous_cycle_completion')
+                if completion is not None:
+                    if item.get('schema_version') != 1 or pending is None:
+                        raise ValueError('completion without preceding cycle')
+                    cb, ce, cp = completion['start_ns'], completion['end_ns'], completion['cadence_ns']
+                    if (any(type(value) is not int for value in (cb, ce, cp, completion['cycle_id'], completion['duration_ns']))
+                            or cb != pending['start_ns'] or cp != pending['cadence_ns']
+                            or completion['cycle_id'] != pending['cycle_id'] or ce < pending['end_ns']
+                            or cp <= 0 or completion['duration_ns'] != ce - cb
+                            or (not terminal and ce > item['start_ns'])):
+                        raise ValueError('invalid pipeline completion')
+                    full_cpu = completion.get('thread_cpu_ns')
+                    if full_cpu is not None and (type(full_cpu) is not int or full_cpu < 0):
+                        raise ValueError('invalid pipeline CPU')
+                    if cb >= start_ns and ce <= end_ns:
+                        fraction = (ce - cb) / cp
+                        result['completed_cycles'] += 1
+                        result['full_over_period_cycles'] += fraction > 1
+                        result['full_cycle_fraction_max'] = max(result['full_cycle_fraction_max'] or 0, fraction)
+                        phases.add('full_pipeline_cycle', ce - cb)
+                        if full_cpu is not None:
+                            cpu_phases.add('full_pipeline_cycle', full_cpu)
+                    pending = None
+                if terminal:
+                    if completion is None:
+                        raise ValueError('empty terminal completion')
+                    terminated = True
+                    continue
                 begin, end, period = item['start_ns'], item['end_ns'], item['cadence_ns']
                 if any(isinstance(v, bool) or not isinstance(v, int) for v in (begin, end, period)) or begin > end or period <= 0 or item['duration_ns'] != end - begin:
                     raise ValueError('invalid cost interval')
                 identity = item['cycle_id']
                 if not isinstance(identity, int) or isinstance(identity, bool) or identity <= 0 or item.get('schema_version') != 1:
                     raise ValueError('invalid cost identity')
+                if previous_completion is not None and (identity <= previous_completion[0] or begin <= previous_completion[1]):
+                    raise ValueError('cost intervals must increase')
+                previous_completion = identity, begin
+                pending = item
                 if begin < start_ns or end > end_ns:
                     continue
                 if previous is not None and (identity <= previous[0] or begin <= previous[1]):
@@ -1152,11 +1203,13 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
     telemetry['reason'] = None if telemetry['available'] else ('no fresh unique sample received inside window' if telemetry['enabled'] else 'disabled or legacy input')
     costs = summarize_costs(Path(path).with_name(Path(path).stem + '-costs.jsonl'), start_ns, end_ns)
     limits = {key: (options or {}).get(key) for key in ('max_cycle_fraction', 'max_observer_cpu_percent_one_core')}
-    observations = {'max_cycle_fraction': costs.get('cycle_fraction_max'),
+    observations = {'max_cycle_fraction': costs.get('full_cycle_fraction_max'),
                     'max_observer_cpu_percent_one_core': (observer['total_cpu_percent_one_core']
                         if not owned_cpu_unavailable else None)}
     configured = {key: limit for key, limit in limits.items() if limit is not None}
     missing = [key for key in configured if observations[key] is None]
+    if 'max_cycle_fraction' in configured and costs.get('completed_cycles', 0) < costs.get('cycles', 0):
+        missing.append('pipeline_completion_incomplete')
     if configured and owned_cpu_unavailable:
         missing.append('owned_child_cpu_incomplete')
     if configured and observer_missing_samples:

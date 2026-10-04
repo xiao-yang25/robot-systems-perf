@@ -1,0 +1,181 @@
+{
+  "format_version": 1,
+  "purpose": "requirements_pending_fill_limits_before_acceptance",
+  "defaults": {
+    "format_version": 1,
+    "purpose": "platform_exploration_requirements_must_be_confirmed",
+    "warmup_seconds": 5,
+    "measurement_seconds": 60,
+    "repetitions": 3,
+    "drain_seconds": 3,
+    "resource_sampling_seconds": 0.2,
+    "quality_limits": {
+      "min_samples": 1000,
+      "max_release_late_fraction": 0.01
+    },
+    "resource_options": {
+      "skip_temperatures": true,
+      "max_cycle_fraction": null,
+      "max_observer_cpu_percent_one_core": null
+    }
+  },
+  "cases": [
+    {
+      "name": "c01-reference",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0,
+          "acceptance_limits": {
+            "max_deadline_miss_fraction": null,
+            "max_data_age_expired_fraction": null
+          },
+          "max_data_age_us": null
+        }
+      ]
+    },
+    {
+      "name": "c01-large-payload",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 30,
+          "payload_bytes": 1048576,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0,
+          "acceptance_limits": {
+            "max_deadline_miss_fraction": null,
+            "max_data_age_expired_fraction": null
+          },
+          "max_data_age_us": null
+        }
+      ]
+    },
+    {
+      "name": "s01-reference",
+      "scenarios": [
+        {
+          "id": "S01",
+          "frequency_hz": 1000,
+          "work_us": 50,
+          "deadline_us": null,
+          "cpu_interference_workers": 0,
+          "acceptance_limits": {
+            "max_deadline_miss_fraction": null,
+            "max_data_age_expired_fraction": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "sampler-min-a",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0,
+          "acceptance_limits": {
+            "max_deadline_miss_fraction": null,
+            "max_data_age_expired_fraction": null
+          },
+          "max_data_age_us": null
+        }
+      ],
+      "sampling_mode": "minimal",
+      "repetitions": 1
+    },
+    {
+      "name": "sampler-basic-a",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0,
+          "acceptance_limits": {
+            "max_deadline_miss_fraction": null,
+            "max_data_age_expired_fraction": null
+          },
+          "max_data_age_us": null
+        }
+      ],
+      "sampling_mode": "basic",
+      "repetitions": 1
+    },
+    {
+      "name": "sampler-basic-b",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0,
+          "acceptance_limits": {
+            "max_deadline_miss_fraction": null,
+            "max_data_age_expired_fraction": null
+          },
+          "max_data_age_us": null
+        }
+      ],
+      "sampling_mode": "basic",
+      "repetitions": 1
+    },
+    {
+      "name": "sampler-min-b",
+      "scenarios": [
+        {
+          "id": "C01",
+          "frequency_hz": 100,
+          "payload_bytes": 4096,
+          "qos_depth": 64,
+          "reliability": "reliable",
+          "callback_delay_us": 0,
+          "deadline_us": null,
+          "cpu_interference_workers": 0,
+          "acceptance_limits": {
+            "max_deadline_miss_fraction": null,
+            "max_data_age_expired_fraction": null
+          },
+          "max_data_age_us": null
+        }
+      ],
+      "sampling_mode": "minimal",
+      "repetitions": 1
+    }
+  ],
+  "sampler_comparisons": [
+    {
+      "name": "c01-resource-sampler",
+      "abba_cases": [
+        "sampler-min-a",
+        "sampler-basic-a",
+        "sampler-basic-b",
+        "sampler-min-b"
+      ],
+      "max_p99_increase_percent": null,
+      "repeat_blocks": 3
+    }
+  ]
+}

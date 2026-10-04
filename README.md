@@ -10,7 +10,7 @@
 | --- | --- |
 | C01：ROS 2 同机跨进程通信 | 发送迟到、发布调用耗时、通信/数据年龄/响应时延、实际窗口收发速率与有效载荷吞吐、交付完整性 |
 | S01：Linux 周期任务 | 启动偏差、周期误差、墙钟/CPU/响应时间、截止期违约及超期幅度 |
-| 诊断 | 分位数、直方图、时间分段、尾部消息编号、连续违约；可选数据年龄阈值 |
+| 诊断 | 分位数、直方图、时间分段、尾事件各阶段关联、连续违约；C01 实际 RMW/QoS、映射库摘要与声明配置 |
 | 资源 | 每核 CPU、进程/线程 CPU 与可用 schedstat、RSS、缺页、切换、cgroup 节流、温度/频率与可见功率传感器；可选 Jetson GPU/EMC 活动遥测 |
 | 测试套件 | 参考点、大小载荷、高频、QoS、慢消费者、CPU 干扰及资源采集 ABBA 开销对照 |
 | 业务进程采集 | 自动发现现有活跃进程、按名称/PID纳入对象、动态线程与进程重启跟踪；输出资源而非消息时延 |
@@ -89,6 +89,8 @@ robot-perf-monitor --profile light --require-jetson --include-name '^component_c
 ## 结果与检查
 
 阅读套件目录下的 `SUITE_REPORT.md`，再查看每个 case 的 `REPORT.md` 和 `summary.json`。`suite-status.json` / `run-status.json` 的 complete 只表示采集成功；业务达标、输入质量和采集开销分别判断。失败退出非零并保留证据；结果不进入 Git。
+
+每轮新增 `acceptance` 分项状态；期限与容许违约率、总 CPU / 完整采样周期预算以及多组 ABBA 增幅未配置时不判通过。待填模板、三组 ABBA 和五轮大包尾部诊断见 [验收与诊断指南](docs/ACCEPTANCE.md)。库映射与配置声明不等于实际传输验证；本工具尚未提供 DDS/内核逐事件根因归因。
 
 ```bash
 python3 -m unittest discover -s tests -v

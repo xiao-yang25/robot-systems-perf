@@ -78,6 +78,19 @@ class MetricsV2Tests(unittest.TestCase):
         self.assertEqual(metrics['counts']['delivered_after_planned_window_end'], 0)
         self.assertIsNone(self.c01()['throughput']['valid_received_payload_bytes_per_second'])
 
+    def test_response_tail_decomposition_is_nonoverlapping_and_marks_drain(self):
+        metrics = self.c01()
+        tail = metrics['diagnostics']['response_tail_decomposition']
+        self.assertEqual([item['response_time_ns'] for item in tail], [180, 150, 110, 60])
+        self.assertEqual(tail[0]['seq'], 4)
+        self.assertEqual(tail[0]['callback_cpu_time_ns'], 5)
+        for item in tail:
+            self.assertEqual(sum(item[key] for key in ('release_lateness_ns', 'generation_to_publish_ns',
+                'publish_to_callback_ns', 'callback_wall_time_ns')), item['response_time_ns'])
+        self.assertTrue(next(item for item in tail if item['seq'] == 5)['received_in_drain'])
+        self.assertFalse(next(item for item in tail if item['seq'] == 4)['received_in_drain'])
+        self.assertFalse(next(item for item in tail if item['seq'] == 1)['received_in_drain'])
+
     def test_deadline_missing_streak_and_completed_overrun_have_distinct_populations(self):
         metrics = self.c01()
         self.assertEqual((metrics['deadline']['late'], metrics['deadline']['missing'],
