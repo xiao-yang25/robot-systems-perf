@@ -17,6 +17,8 @@
 
 保留原始 CSV、配置、环境、资源 JSONL 和逐轮报告；缺失能力标为不可用。内核等待是采样区间累计值，不能定位单次调度原因；内部队列、执行器就绪等待、GPU 推理干扰和真实机器人业务链路尚未实现。
 
+与官方及开源工具的有限对照入口见 [工具对照指南](docs/TOOL_COMPARISON.md)：pidstat 资源采样、cyclictest 周期唤醒，以及 ROS 2 tracing 的 Fast DDS/Cyclone DDS 事件采集。先预检查，再按固定轮次执行。
+
 ## 快速验证
 
 需要 Git、Docker、Bash 和宿主 Python 3。默认镜像为 Ubuntu 22.04 / ROS 2 Humble；使用 Docker 引擎原生架构，不使用跨架构仿真。
