@@ -20,7 +20,7 @@ from .resources import validate_resource_options
 def read_optional(path):
     try:
         return Path(path).read_text().strip().replace('\x00', '')
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, TypeError):
         return None
 
 
@@ -88,6 +88,8 @@ def validate(config):
 
 
 def environment(root):
+    from .platform_probe import collect_profile
+    profile_file = os.environ.get('EP_HOST_PROFILE')
     packages = command_optional(['dpkg-query', '-W', '-f=${Package}=${Version}\n',
                                  'ros-*-rclcpp', 'ros-*-rmw*', 'ros-*-std-msgs'])
     source_files = list((root / 'src').glob('*')) + list((root / 'perfkit').glob('*.py'))
@@ -122,7 +124,9 @@ def environment(root):
         'cgroup': {name: read_optional('/sys/fs/cgroup/' + name) for name in
                    ('cpu.max', 'cpu.stat', 'cpuset.cpus.effective', 'memory.max', 'memory.current')},
         'kernel_schedstat': read_optional('/proc/sys/kernel/sched_schedstats'),
-        'host_profile': json.loads(Path(os.environ['EP_HOST_PROFILE']).read_text()) if os.environ.get('EP_HOST_PROFILE') else None,
+        'host_profile': json.loads(Path(profile_file).read_text()) if profile_file else
+                        collect_profile(include_kernel_command_line=False),
+        'host_profile_source': 'supplied_file' if profile_file else 'local_process_view_at_startup',
         'compiler': command_optional(['c++', '--version']),
         'power_mode_readonly': command_optional(['nvpmodel', '-q']),
         'limitations': [
@@ -284,7 +288,13 @@ def run_experiment(config, output, root=None):
     root = Path(root) if root is not None else Path(__file__).resolve().parent.parent
     config = validate(config)
     output = Path(output)
-    for name in ('ros_bench', 'periodic_bench'):
+    required = set()
+    for scenario in config['scenarios']:
+        if scenario['id'] == 'C01':
+            required.add('ros_bench')
+        if scenario['id'] == 'S01' or scenario.get('cpu_interference_workers', 0):
+            required.add('periodic_bench')
+    for name in required:
         if not (root / 'build' / name).is_file():
             raise RuntimeError('benchmark binary missing; build with CMake or use Docker')
     output.mkdir(parents=True, exist_ok=False)
@@ -294,6 +304,9 @@ def run_experiment(config, output, root=None):
     try:
         (output / 'config.json').write_text(json.dumps(config, indent=2) + '\n')
         env = environment(root)
+        env['required_binaries'] = sorted(required)
+        env['binary_sha256'] = {name: hashlib.sha256((root / 'build' / name).read_bytes()).hexdigest()
+                                for name in sorted(required)}
         (output / 'environment.json').write_text(json.dumps(env, indent=2) + '\n')
         if config.get('sampling_mode', 'basic') == 'basic':
             sampler_kwargs = {'options': config['resource_options']} if config.get('resource_options') else {}

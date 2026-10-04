@@ -25,7 +25,7 @@ Ubuntu若未提供 venv/pip，先准备相应 Python 工具。安装构建使用
 
 ```bash
 python3 -m pip wheel --no-deps . --wheel-dir dist
-python3 -m pip install --no-index /path/to/robot_systems_perf-0.3.0-py3-none-any.whl
+python3 -m pip install --no-index /path/to/robot_systems_perf-0.4.0-py3-none-any.whl
 ```
 
 上述是准备机器与设备分别执行的命令，wheel文件路径需替换。wheel只提供业务资源采集的命令与Python模块；C01/S01需要C++构建，仍使用源码仓库的 Docker/native 入口。
@@ -134,6 +134,34 @@ SIGINT/SIGTERM 在采集期间结束观察、关闭采样器并保存 interrupte
 此模式直接采集现有业务的资源与调度累计线索。它不产生业务消息端到端时延、单次回调耗时、节点级执行期限或因果链，也没有 GPU 推理时间；GPU活动可通过0.4可选遥测获取。已有资源指标与可用性说明见 [设备测试指南](JETSON_RUNBOOK.md)。要从组件容器拆分到节点与回调，需要接入 ROS 追踪或业务时间戳。
 
 ## 分层采样与可选 Jetson 遥测（0.4）
+
+可在任意目录使用内建 profile，无需找到仓库配置文件：
+
+```bash
+robot-perf-monitor --profile light --require-jetson \
+  --include-name '^component_conta' --output results/business-light-001
+robot-perf-monitor --profile full --require-jetson \
+  --include-name '^component_conta' --output results/business-full-001
+```
+
+| profile | 系统/进程 | 线程 | 发现 | 共同设置 |
+| --- | --- | --- | --- | --- |
+| light | 1秒 | 关闭 | 2秒 | 60秒、最多256目标、跳过温度、遥测关闭、预算null |
+| full | 0.5秒 | 0.5秒、全部可见线程 | 1秒 | 同上 |
+
+这两个起点没有预设算法、UID或服务名；UID仍继承当前用户的默认范围。第一次用 light 确认候选与资源趋势，再在独立窗口用 full 观察线程。比较两个profile只能说明覆盖与成本的取舍。对应可编辑模板为 `configs/business-light.json` 和 `configs/business-full.json`。参数优先级为内建profile、配置文件、命令行；`resource_options` 按字段合并。不开profile时原有默认配置不变。
+
+预算必须按业务允许的影响自行设置，例如 `--max-cycle-fraction` 和 `--max-observer-cpu-percent`；不设置时只报告观测值与未配置状态。查看总CPU、超周期次数、来源覆盖、上限遗漏及字段缺失，再评估是否足以支持结论；启动成功不等于开销预算通过。
+
+已知服务的硬 cgroup 范围可以提前筛选，例如（替换成现场路径）：
+
+```bash
+robot-perf-monitor --profile full --require-jetson --active-cpu-percent 0 \
+  --include-name '^component_conta' --cgroup-pattern '^/robot.slice/' \
+  --cgroup-prefilter --output results/service-business-001
+```
+
+`--cgroup-prefilter` 默认关闭，必须有非空 cgroup 条件。只提前排除明确不匹配的PID；早读失败回退到原详细扫描，匹配对象仍重新验证身份、UID和最终cgroup。它不是 `cgroup.procs` 服务索引，仍枚举可见PID；大多数PID都匹配时可能增加读取成本。发现记录保留早筛数量和回退次数。cgroup只是硬过滤，名称/PID/活动规则仍决定是否纳入；频繁迁移或瞬时对象仍可能错过采样。
 
 从通用模板开始，配置不预设算法名称：
 

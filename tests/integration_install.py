@@ -11,11 +11,15 @@ import tempfile
 import venv
 import zipfile
 
-from integration_monitor import cleanup, spawn
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tests.process_helpers import OwnedProcesses
+from tests.integration_monitor import cleanup, spawn
 
 
 def verify(wheel, output, pip_root=None):
-    owned = []
+    owned = OwnedProcesses()
     if pip_root is None:
         spec = importlib.util.find_spec('pip')
         if spec is None:
@@ -68,25 +72,44 @@ def verify(wheel, output, pip_root=None):
             with zipfile.ZipFile(wheel) as archive:
                 for name, digest in environment['source']['sha256'].items():
                     assert hashlib.sha256(archive.read(name)).hexdigest() == digest, name
+            for profile in ('light', 'full'):
+                profile_run = subprocess.run([str(executable), '--profile', profile,
+                    '--seconds', '2', '--active-cpu-percent', '0',
+                    '--pid', str(first.pid), '--pid', str(second.pid),
+                    '--output', 'capture-' + profile], cwd=cwd, env=env,
+                    text=True, capture_output=True, timeout=30)
+                (output/('profile-' + profile + '.log')).write_text(profile_run.stdout + profile_run.stderr)
+                assert profile_run.returncode == 0, profile_run.stdout + profile_run.stderr
+                profile_root = cwd/('capture-' + profile)
+                profile_config = json.loads((profile_root/'monitor-config.json').read_text())
+                profile_summary = json.loads((profile_root/'monitor-summary.json').read_text())
+                enabled = profile == 'full'
+                assert profile_config['resource_options']['collect_threads'] == enabled
+                assert ('thread' in profile_summary['resources']['source_coverage']) == enabled
+                assert profile_config['resource_options']['max_cycle_fraction'] is None
+                assert profile_config['resource_options']['max_observer_cpu_percent_one_core'] is None
+                assert profile_summary['quality']['peak_registered_targets'] == 2
+                assert first.poll() is None and second.poll() is None
             (output/'verification.json').write_text(json.dumps({
                 'status': 'passed', 'installed_package_version': environment['source']['package_version'],
                 'selected_process_count': len(process_pids), 'relative_output_created_in_cwd': True,
                 'dynamic_threads_observed': True,
                 'source_pythonpath_removed': True, 'wheel_hashes_match': True,
-                'external_targets_remain_alive': True}, indent=2) + '\n')
+                'external_targets_remain_alive': True,
+                'installed_light_full_coverage_verified': True}, indent=2) + '\n')
             print('PASS offline wheel installation, console entry from arbitrary cwd, two explicit PIDs, relative output, package provenance and external target survival')
         finally:
             cleanup(owned)
 
 
 def main():
-    if sys.platform != 'linux':
-        raise SystemExit('This integration check requires Linux')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
     parser.add_argument('--pip-root', type=Path, help='Optional offline pip module/zip for test bootstrap')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
+    if sys.platform != 'linux':
+        raise SystemExit('This integration check requires Linux')
     wheel = args.wheel.resolve()
     if args.output:
         args.output.mkdir(parents=True, exist_ok=False)

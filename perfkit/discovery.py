@@ -42,6 +42,8 @@ def _stat(text, pid):
 def _identity_status(text):
     uid, kernel = None, False
     for line in text.splitlines():
+        if not line.startswith(('Uid:', 'Kthread:')):
+            continue
         name, separator, value = line.partition(':')
         if not separator:
             continue
@@ -91,7 +93,13 @@ def scan_processes(proc_root=Path('/proc'), exclude_pids=(), *, _scope=None):
             'skipped_by_reason': {}, 'optional_unavailable_by_reason': {}}
     if _scope is not None:
         scan.update(scope_filtered_count=0, scope_filtered_by_reason={},
-                    mode='explicit_pids' if explicit_only else 'scoped_discovery')
+                    mode='explicit_pids' if explicit_only else 'scoped_discovery',
+                    cgroup_prefilter=_scope.cgroup_prefilter,
+                    prefilter_fallback_count=0)
+        old_paths = _scope._scan_paths if _scope._path_root == root else {}
+    else:
+        old_paths = {}
+    current_paths = {}
 
     def filtered(reason):
         scan['scope_filtered_count'] += 1
@@ -107,10 +115,23 @@ def scan_processes(proc_root=Path('/proc'), exclude_pids=(), *, _scope=None):
         base = root / str(pid)
         field = 'stat'
         try:
-            stat_path = base / 'stat'
+            files = old_paths.get(pid)
+            if _scope is not None and _scope.cgroup_prefilter:
+                # A hard cgroup filter permits an early negative result. On
+                # unreadability, use the normal path and preserve its reasons.
+                try:
+                    early = _cgroup_paths((files[2] if files else base / 'cgroup').read_text(encoding='utf-8'))
+                except (OSError, ValueError, UnicodeError):
+                    scan['prefilter_fallback_count'] += 1
+                else:
+                    if not any(pattern.search(path) for pattern in _scope.cgroups for path in early):
+                        filtered('cgroup_prefilter')
+                        continue
+            stat_path = files[0] if files else base / 'stat'
             stat, flags = _stat(stat_path.read_text(encoding='utf-8'), pid)
             field = 'status'
-            uid, kernel = _identity_status((base / 'status').read_text(encoding='utf-8'))
+            status_path = files[1] if files else base / 'status'
+            uid, kernel = _identity_status(status_path.read_text(encoding='utf-8'))
             if uid is None:
                 scan['skipped_count'] += 1
                 _increment(scan['skipped_by_reason'], 'uid_unknown')
@@ -125,7 +146,8 @@ def scan_processes(proc_root=Path('/proc'), exclude_pids=(), *, _scope=None):
                     filtered('kernel_thread')
                     continue
             try:
-                cgroups = _cgroup_paths((base / 'cgroup').read_text(encoding='utf-8'))
+                cgroup_path = files[2] if files else base / 'cgroup'
+                cgroups = _cgroup_paths(cgroup_path.read_text(encoding='utf-8'))
             except (OSError, ValueError, UnicodeError) as error:
                 cgroups = []
                 _increment(scan['optional_unavailable_by_reason'], _failure('cgroup', error))
@@ -134,7 +156,8 @@ def scan_processes(proc_root=Path('/proc'), exclude_pids=(), *, _scope=None):
                 filtered('cgroup_scope')
                 continue
             try:
-                exe_name = Path(os.readlink(base / 'exe')).name or None
+                exe_path = files[3] if files else base / 'exe'
+                exe_name = Path(os.readlink(exe_path)).name or None
             except OSError as error:
                 exe_name = None
                 _increment(scan['optional_unavailable_by_reason'], _failure('exe', error))
@@ -153,7 +176,11 @@ def scan_processes(proc_root=Path('/proc'), exclude_pids=(), *, _scope=None):
                           'cpu_ticks': stat['utime_ticks'] + stat['stime_ticks'],
                           'cgroup_paths': cgroups,
                           'is_kernel': kernel or bool(flags & PF_KTHREAD)})
+        if _scope is not None:
+            current_paths[pid] = (stat_path, status_path, cgroup_path, exe_path)
     scan['process_count'] = len(processes)
+    if _scope is not None:
+        _scope._scan_paths, _scope._path_root = current_paths, root
     return {'processes': processes, 'scan': scan}
 
 
@@ -176,6 +203,10 @@ class DiscoverySelector:
         self.include = [re.compile(item) for item in config.get('include_names', [])]
         self.exclude = [re.compile(item) for item in config.get('exclude_names', [])]
         self.cgroups = [re.compile(item) for item in config.get('cgroup_patterns', [])]
+        self.cgroup_prefilter = config.get('cgroup_prefilter', False)
+        if not isinstance(self.cgroup_prefilter, bool) or (self.cgroup_prefilter and not self.cgroups):
+            raise ValueError('cgroup_prefilter requires a boolean and nonempty cgroup_patterns')
+        self._scan_paths, self._path_root = {}, None
         self.active = config.get('active_cpu_percent', 0)
         if (not isinstance(self.active, (int, float)) or isinstance(self.active, bool)
                 or not math.isfinite(self.active) or self.active < 0):

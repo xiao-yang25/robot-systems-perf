@@ -10,20 +10,31 @@ if [[ "$CONFIG" != /* ]]; then CONFIG="$ROOT/$CONFIG"; fi
 if [[ "$OUTPUT" != /* ]]; then OUTPUT="$ROOT/$OUTPUT"; fi
 [[ -f "$CONFIG" && ! -e "$OUTPUT" ]] || { echo "Config required; output must be a new directory" >&2; exit 1; }
 python3 -c 'import sys; assert sys.version_info >= (3,10), "Python 3.10+ required for native runs"'
-if [[ -z "${AMENT_PREFIX_PATH:-}" ]]; then
+cd "$ROOT"
+NEEDS_ROS="$(python3 - "$CONFIG" "$COMMAND" <<'PY'
+import json, sys
+from perfkit.runner import validate
+from perfkit.suite import expand_suite
+config = json.load(open(sys.argv[1]))
+configs = [validate(config)] if sys.argv[2] == 'runner' else [item[1] for item in expand_suite(config)]
+print(int(any(s['id'] == 'C01' for c in configs for s in c['scenarios'])))
+PY
+)"
+if [[ "$NEEDS_ROS" == 1 && -z "${AMENT_PREFIX_PATH:-}" ]]; then
   ROS_SETUP="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
   [[ -f "$ROS_SETUP" ]] || { echo "Install a compatible ROS environment or use Docker" >&2; exit 1; }
   set +u
   source "$ROS_SETUP"
   set -u
 fi
-cd "$ROOT"
 mkdir -p "$(dirname "$OUTPUT")"
 HOST_PROFILE="$(dirname "$OUTPUT")/$(basename "$OUTPUT")-host.json"
 PROBE_ARGS=()
 if [[ "${REQUIRE_JETSON:-0}" == 1 ]]; then PROBE_ARGS+=(--require-jetson); fi
 python3 -m perfkit.platform_probe --output "$HOST_PROFILE" ${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"}
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+ROS_BUILD=OFF
+if [[ "$NEEDS_ROS" == 1 ]]; then ROS_BUILD=ON; fi
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEP_BUILD_ROS="$ROS_BUILD"
 cmake --build build -j2
 EP_HOST_PROFILE="$HOST_PROFILE" EP_ENVIRONMENT_KIND="${ENVIRONMENT_KIND:-native-linux}" \
   python3 -m "perfkit.$COMMAND" --config "$CONFIG" --output "$OUTPUT"

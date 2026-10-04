@@ -1,0 +1,27 @@
+{
+  "format_version": 1,
+  "duration_seconds": 60,
+  "resource_sampling_seconds": 0.5,
+  "discovery_interval_seconds": 1,
+  "include_names": [],
+  "exclude_names": [],
+  "cgroup_patterns": [],
+  "cgroup_prefilter": false,
+  "pids": [],
+  "active_cpu_percent": 1,
+  "max_targets": 256,
+  "require_jetson": false,
+  "resource_options": {
+    "system_sampling_seconds": 0.5,
+    "process_sampling_seconds": 0.5,
+    "thread_sampling_seconds": 0.5,
+    "collect_threads": true,
+    "thread_names": [],
+    "thread_ids": [],
+    "skip_temperatures": true,
+    "jetson_telemetry": false,
+    "jetson_sampling_seconds": 1,
+    "max_cycle_fraction": null,
+    "max_observer_cpu_percent_one_core": null
+  }
+}

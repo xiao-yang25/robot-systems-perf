@@ -11,8 +11,12 @@ import tempfile
 import time
 from unittest.mock import patch
 
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from perfkit.resources import ResourceSampler, summarize_resources
 from tests.integration_resource_profiles import PROGRAM
+from tests.process_helpers import OwnedProcesses
 
 
 def owned_telemetry(output):
@@ -54,9 +58,11 @@ def run(output, baseline=None, seconds=1.6):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         variants.insert(0, ('baseline', module.ResourceSampler))
-    owned = subprocess.Popen([sys.executable, '-c', PROGRAM])
+    owner = OwnedProcesses()
     records = []
     try:
+        owned = subprocess.Popen([sys.executable, '-c', PROGRAM])
+        owner.add(owned)
         deadline = time.monotonic() + 5
         while len(list(Path('/proc', str(owned.pid), 'task').glob('*'))) != 49:
             if owned.poll() is not None or time.monotonic() > deadline:
@@ -102,25 +108,16 @@ def run(output, baseline=None, seconds=1.6):
             'scope': 'same 49 threads, source schedules and metrics; descriptive repeats, no Jetson or business acceptance'},
             indent=2) + '\n')
     finally:
-        if owned.poll() is None:
-            try:
-                owned.terminate()
-            except ProcessLookupError:
-                pass
-        try:
-            owned.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            owned.kill()
-            owned.wait(timeout=5)
+        owner.cleanup()
 
 
 if __name__ == '__main__':
-    if sys.platform != 'linux':
-        raise SystemExit('This integration check requires Linux')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--baseline', type=Path, help='previous perfkit/resources.py; same resource-options API')
     args = parser.parse_args()
+    if sys.platform != 'linux':
+        raise SystemExit('This integration check requires Linux')
     if args.output:
         args.output.mkdir(parents=True, exist_ok=False)
         run(args.output, args.baseline)

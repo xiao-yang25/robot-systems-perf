@@ -427,19 +427,23 @@ class ResourceSampler:
             self._thread_paths.pop(registration['pid'], None)
             return None, reason or 'PID identity not verified', selection
         try:
-            paths = sorted(path for path in (base / 'task').iterdir() if path.name.isdigit())
+            task_root = base / 'task'
+            with os.scandir(task_root) as directory:
+                names = sorted(entry.name for entry in directory
+                               if entry.name.isascii() and entry.name.isdecimal())
             tasks = []
             old_paths = self._thread_paths.get(registration['pid'], {})
             current_paths = {}
-            for path in paths:
+            for name in names:
                 selection['seen'] += 1
-                tid = int(path.name)
+                tid = int(name)
                 omitted = None
                 stat = None
                 if self._thread_ids and tid not in self._thread_ids:
                     omitted = 'tid_filter'
-                elif self._thread_patterns:
-                    files = old_paths.get(path) or _task_paths(path)
+                else:
+                    files = old_paths.get(tid) or _task_paths(task_root / name)
+                if not omitted and self._thread_patterns:
                     stat, failure = _read(files[0], parse_task_stat)
                     if stat is None:
                         # Preserve failed reads instead of treating unreadable names as filtered.
@@ -454,8 +458,9 @@ class ResourceSampler:
                     reasons = selection['omitted_by_reason']
                     reasons[omitted] = reasons.get(omitted, 0) + 1
                     continue
-                files = old_paths.get(path) or _task_paths(path)
-                task = _task(path, self._page_size, files, stat, self._thread_patterns)
+                # Supplying immutable paths avoids constructing a task Path
+                # for each already-known TID. Values/identity are never cached.
+                task = _task(None, self._page_size, files, stat, self._thread_patterns)
                 task['tid'] = tid
                 if self._thread_patterns and task.get('stat') is not None and (
                         task['stat']['starttime_ticks'] != stat['starttime_ticks'] or
@@ -463,7 +468,7 @@ class ResourceSampler:
                     task = {'tid': tid, 'stat': None, 'status': None, 'schedstat': None,
                             'availability': {'stat': 'thread identity/name changed during selection'}}
                 if task.get('stat') is not None:
-                    current_paths[path] = files
+                    current_paths[tid] = files
                 tasks.append(task)
                 selection['sampled'] += 1
             after, reason = _read(base / 'stat', parse_task_stat)

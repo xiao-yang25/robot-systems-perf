@@ -52,6 +52,19 @@ REQUIRE_JETSON=1 ENVIRONMENT_KIND=jetson-native \
   ./scripts/run-native.sh configs/device-suite.json results/device-native suite
 ```
 
+只测试S01时无需安装或加载ROS，入口自动设置 `EP_BUILD_ROS=OFF`，只构建周期任务：
+
+```bash
+REQUIRE_JETSON=1 ENVIRONMENT_KIND=jetson-native \
+  ./scripts/run-native.sh configs/s01-only.json results/device-s01-native
+```
+
+需要Linux、CMake、C++17编译器和Python3.10+。自行构建时可用 `cmake -S . -B build -DEP_BUILD_ROS=OFF`。直接Python启动runner/suite的新运行也记录启动时当前进程可见的平台档案，`host_profile_source` 区分外部档案与本地视图；`required_binaries` 和 `binary_sha256` 只记录实际使用的程序。旧结果不会补写。Ubuntu24/BSP38正式ROS依赖与镜像digest仍需按现场准备和验证，S01独立构建不能证明这套ROS环境已适配。
+
+Linux集成回收检查需要CPython提供 `os.pidfd_open` / `signal.pidfd_send_signal` 且内核/权限允许调用，SIGCHLD必须为默认处理器且无并发reaper；忽略或自定义处理器在创建负载前明确拒绝。不支持时明确失败，不用裸PID回退。业务monitor入口不依赖这套测试辅助器。兼容回归可分别用模块方式或从任意目录调用测试脚本；集成检查仍需要其对应的源码、配置与已构建程序。
+
+本轮升级后先进行短兼容检查，再复测相同业务、相同线程覆盖和周期的旧/新采集器，优先比较发现成本、线程成本、总CPU及超周期。随后单独比较 [轻量/完整profile](BUSINESS_MONITOR.md#分层采样与可选-jetson-遥测04)；降低覆盖的结果另列。需要cgroup早筛时确认实际服务路径、同一候选范围和动态移入/移出，不能直接把开发fixture读取削减比例当作设备收益。
+
 ## 如何读取结果
 
 每轮看发送质量、实际收发、响应/交付与期限、资源和异常五部分。C01 的真实窗口速率使用统一半开计划窗口，窗口后的交付另列；观察发布速率与计划记账速率也分别保留。chain_latency 从实际产生开始，response_time 从计划释放开始，因此要同时查看 release_lateness。

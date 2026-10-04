@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from perfkit.platform_probe import collect_profile, main
+from perfkit.platform_probe import _Probe, collect_profile, main, optional
 
 
 class PlatformTests(unittest.TestCase):
@@ -241,6 +241,41 @@ class PlatformTests(unittest.TestCase):
                 profile = collect_profile(Path(directory), include_kernel_command_line=False)
             self.assertIsNone(profile['kernel_command_line'])
             self.assertTrue(observed)
+
+    def test_optional_type_errors_are_null_with_explicit_reasons(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write(root, '/proc/stat', 'cpu 1 2 3 4')
+            with patch.object(Path, 'read_text', side_effect=TypeError('unsupported read')):
+                profile = self.profile(root)
+                self.assertIsNone(profile['board_model'])
+                capability = profile['capabilities']['proc_cpu']
+                self.assertFalse(capability['available'])
+                self.assertTrue(capability['present'])
+                self.assertIn('unsupported read', capability['reason'])
+                self.assertIsNone(optional(root / 'proc/stat'))
+            with patch.object(Path, 'iterdir', side_effect=TypeError('unsupported list')):
+                profile = self.profile(root)
+                self.assertFalse(profile['capabilities']['task_stat']['available'])
+                self.assertIn('unsupported list', profile['capabilities']['task_stat']['reason'])
+            with patch.object(_Probe, 'path', side_effect=TypeError('unsupported path')):
+                value, status = _Probe(root).read('/proc/stat')
+                self.assertIsNone(value)
+                self.assertFalse(status['available'])
+                self.assertIn('unsupported path', status['reason'])
+                children, reason = _Probe(root).children('/proc')
+                self.assertEqual(children, [])
+                self.assertIn('unsupported path', reason)
+            def broken_validator(value):
+                raise TypeError('unsupported parser')
+            value, status = _Probe(root).read('/proc/stat', broken_validator)
+            self.assertIsNone(value)
+            self.assertIn('unsupported parser', status['reason'])
+        self.assertIsNone(optional(object()))
+
+    def test_required_fs_root_type_error_is_not_optional(self):
+        with self.assertRaises(TypeError):
+            collect_profile(object())
 
     def test_require_jetson_preserves_failed_profile_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as directory:

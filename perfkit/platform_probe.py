@@ -14,7 +14,7 @@ import time
 def optional(path):
     try:
         return Path(path).read_text().strip().replace('\x00', '')
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, TypeError):
         return None
 
 
@@ -60,7 +60,7 @@ class _Probe:
             status['reason'] = 'permission denied'
         except FileNotFoundError:
             status['reason'] = 'interface missing'
-        except (OSError, UnicodeError, ValueError) as error:
+        except (OSError, UnicodeError, ValueError, TypeError) as error:
             status['reason'] = 'read failed: ' + str(error)
         return None, status
 
@@ -72,7 +72,7 @@ class _Probe:
             return [], 'permission denied listing ' + source
         except FileNotFoundError:
             return [], 'interface directory missing: ' + source
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, TypeError) as error:
             return [], 'directory discovery failed: ' + str(error)
 
 

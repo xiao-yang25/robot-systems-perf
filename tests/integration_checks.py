@@ -1,13 +1,17 @@
 """Run Linux/ROS integration checks inside the built image, separately from benchmarks."""
 import csv
 import json
-import os
 from pathlib import Path
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tests.process_helpers import OwnedProcesses, benchmark_children
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,33 +87,29 @@ def main():
         config = json.loads(cfg.read_text()); config['measurement_seconds'] = 30
         cfg.write_text(json.dumps(config))
         output = root / 'interrupted-run'
+        owner = OwnedProcesses()
         with (root / 'interrupted.log').open('w') as log:
             process = subprocess.Popen(command(cfg, output), cwd=ROOT, stdout=log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
+            owner.add(process)
             children = []
             try:
                 ready_until = time.monotonic() + 15
                 while time.monotonic() < ready_until:
-                    path = Path(f'/proc/{process.pid}/task/{process.pid}/children')
-                    if path.exists():
-                        children = path.read_text().split()
-                    if len(children) >= 3 and (output / 'C01/001/ready').exists(): break
+                    children = benchmark_children(owner)
+                    if {child.role for child in children} >= {'publisher', 'subscriber', 'cpu-load'} and (output / 'C01/001/ready').exists(): break
                     if process.poll() is not None: raise RuntimeError('runner exited before interruption probe')
                     time.sleep(0.02)
                 else:
                     raise RuntimeError('runner did not start all child processes')
-                process.send_signal(signal.SIGTERM)
+                owner.signal(process, signal.SIGTERM)
                 assert process.wait(timeout=15) != 0
                 status = json.loads((output / 'run-status.json').read_text())
                 assert status['status'] == 'failed' and status['error_type'] == 'KeyboardInterrupt'
-                assert all(not Path(f'/proc/{pid}').exists() for pid in children), 'orphan benchmark child survived'
+                assert all(not child.exists() for child in children), 'orphan benchmark child survived'
                 print('PASS: SIGTERM records failure and reaps publisher, subscriber and CPU-load children')
             finally:
-                if process.poll() is None:
-                    os.killpg(process.pid, signal.SIGKILL); process.wait()
-                for pid in children:
-                    try: os.killpg(int(pid), signal.SIGKILL)
-                    except ProcessLookupError: pass
+                owner.cleanup()
 
         suite = json.loads((ROOT / 'configs/suite-smoke.json').read_text())
         suite['cases'] = [next(c for c in suite['cases'] if c['name'] == 'c01-cpu-interference')]
@@ -117,30 +117,28 @@ def main():
         suite['defaults']['measurement_seconds'] = 30
         cfg = root / 'suite-interrupt.json'; cfg.write_text(json.dumps(suite))
         output = root / 'suite-interrupt-run'
+        owner = OwnedProcesses()
         with (root / 'suite-interrupted.log').open('w') as log:
             process = subprocess.Popen([sys.executable, '-m', 'perfkit.suite', '--config', str(cfg),
                                         '--output', str(output)], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+            owner.add(process)
             children = []
             try:
                 until = time.monotonic() + 15
                 while time.monotonic() < until:
-                    path = Path(f'/proc/{process.pid}/task/{process.pid}/children')
-                    children = path.read_text().split() if path.exists() else []
-                    if len(children) >= 3: break
+                    children = benchmark_children(owner)
+                    if {child.role for child in children} >= {'publisher', 'subscriber', 'cpu-load'}: break
                     if process.poll() is not None: raise RuntimeError('suite exited before interruption')
                     time.sleep(0.02)
                 else: raise RuntimeError('suite did not start all children')
-                process.send_signal(signal.SIGTERM)
+                owner.signal(process, signal.SIGTERM)
                 assert process.wait(timeout=15) != 0
                 assert json.loads((output / 'suite-status.json').read_text())['status'] == 'failed'
                 assert json.loads((output / 'c01-cpu-interference/run-status.json').read_text())['status'] == 'failed'
-                assert all(not Path(f'/proc/{pid}').exists() for pid in children)
+                assert all(not child.exists() for child in children)
                 print('PASS: suite interruption preserves both statuses and reaps all owned children')
             finally:
-                if process.poll() is None: process.kill(); process.wait()
-                for pid in children:
-                    try: os.killpg(int(pid), signal.SIGKILL)
-                    except ProcessLookupError: pass
+                owner.cleanup()
 
 
 if __name__ == '__main__':

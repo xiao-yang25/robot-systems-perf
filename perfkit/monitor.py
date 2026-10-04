@@ -31,11 +31,31 @@ LIMITS = [
 ]
 
 
+def profile_config(name):
+    """Explicit coverage presets; budgets require the operator's own limits."""
+    if name not in ('light', 'full'):
+        raise ValueError('unknown business sampling profile')
+    light = name == 'light'
+    period = 1 if light else .5
+    return {'format_version': 1, 'duration_seconds': 60,
+            'resource_sampling_seconds': period,
+            'discovery_interval_seconds': 2 if light else 1,
+            'include_names': [], 'exclude_names': [], 'cgroup_patterns': [],
+            'cgroup_prefilter': False, 'pids': [], 'active_cpu_percent': 1,
+            'max_targets': 256, 'require_jetson': False,
+            'resource_options': {'system_sampling_seconds': period,
+                'process_sampling_seconds': period, 'thread_sampling_seconds': period,
+                'collect_threads': not light, 'thread_names': [], 'thread_ids': [],
+                'skip_temperatures': True, 'jetson_telemetry': False,
+                'jetson_sampling_seconds': 1, 'max_cycle_fraction': None,
+                'max_observer_cpu_percent_one_core': None}}
+
+
 def defaults():
     return {'format_version': 1, 'duration_seconds': 60,
             'resource_sampling_seconds': .5, 'discovery_interval_seconds': 1,
             'uids': [os.getuid()], 'include_names': [], 'exclude_names': [],
-            'cgroup_patterns': [], 'pids': [], 'active_cpu_percent': 1,
+            'cgroup_patterns': [], 'cgroup_prefilter': False, 'pids': [], 'active_cpu_percent': 1,
             'max_targets': 64, 'require_jetson': False, 'resource_options': {}}
 
 
@@ -62,6 +82,8 @@ def validate_config(config):
         raise ValueError('max_targets must be an integer')
     if not isinstance(resolved['require_jetson'], bool):
         raise ValueError('require_jetson must be boolean')
+    if not isinstance(resolved['cgroup_prefilter'], bool) or (resolved['cgroup_prefilter'] and not resolved['cgroup_patterns']):
+        raise ValueError('cgroup_prefilter requires a boolean and nonempty cgroup_patterns')
     for key in ('uids', 'pids'):
         values = resolved[key]
         if key == 'uids' and values is None:
@@ -356,6 +378,8 @@ def run_monitor(config, output, proc_root=Path('/proc')):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path)
+    parser.add_argument('--profile', choices=('light', 'full'),
+                        help='coverage preset; config and CLI override it; budgets remain unset')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--seconds', type=float)
     parser.add_argument('--interval', type=float)
@@ -368,6 +392,8 @@ def main():
                    'jetson-interval', 'max-cycle-fraction', 'max-observer-cpu-percent'):
         parser.add_argument('--' + option, type=float)
     parser.add_argument('--no-threads', action='store_true')
+    parser.add_argument('--cgroup-prefilter', action='store_true',
+                        help='check configured cgroup patterns before detailed proc reads; may cost more if most PIDs match')
     parser.add_argument('--thread-name', action='append')
     parser.add_argument('--tid', type=int, action='append')
     parser.add_argument('--skip-temperatures', action='store_true')
@@ -378,7 +404,17 @@ def main():
     args = parser.parse_args()
     if platform.system() != 'Linux':
         parser.error('Business monitoring requires Linux procfs; run on the target host')
-    config = json.loads(args.config.read_text()) if args.config else {}
+    config = profile_config(args.profile) if args.profile else {}
+    loaded = json.loads(args.config.read_text()) if args.config else {}
+    if not isinstance(loaded, dict):
+        parser.error('monitor configuration must be an object')
+    profile_options = config.get('resource_options', {})
+    config.update(loaded)
+    if args.profile:
+        loaded_options = loaded.get('resource_options', {})
+        if not isinstance(loaded_options, dict):
+            parser.error('resource_options must be an object')
+        config['resource_options'] = dict(profile_options, **loaded_options)
     for option, field in [('seconds', 'duration_seconds'), ('interval', 'resource_sampling_seconds'),
                           ('discovery_interval', 'discovery_interval_seconds'),
                           ('active_cpu_percent', 'active_cpu_percent'), ('max_targets', 'max_targets')]:
@@ -392,6 +428,8 @@ def main():
         config['uids'] = None
     if args.require_jetson:
         config['require_jetson'] = True
+    if args.cgroup_prefilter:
+        config['cgroup_prefilter'] = True
     options = copy.deepcopy(config.get('resource_options', {}))
     if not isinstance(options, dict):
         parser.error('resource_options must be an object')

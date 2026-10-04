@@ -11,6 +11,10 @@ import sys
 import tempfile
 import time
 
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tests.process_helpers import OwnedProcesses
 from perfkit.resources import ResourceSampler, summarize_resources
 
 PROGRAM = '''
@@ -28,7 +32,9 @@ while True:
 
 
 def run(output, seconds=1.6, baseline=None):
+    owner = OwnedProcesses()
     owned = subprocess.Popen([sys.executable, '-c', PROGRAM])
+    owner.add(owned)
     try:
         deadline = time.monotonic() + 5
         while len(list(Path('/proc', str(owned.pid), 'task').glob('*'))) < 49:
@@ -90,8 +96,7 @@ def run(output, seconds=1.6, baseline=None):
             'baseline_sha256': hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline else None,
             'measurements': measurements, 'interpretation': 'descriptive repeats; no business acceptance or Jetson claim'}, indent=2) + '\n')
     finally:
-        owned.terminate()
-        owned.wait(timeout=5)
+        owner.cleanup()
 
 
 def owned_telemetry(output):
@@ -108,30 +113,35 @@ while True:
     time.sleep(.05)
 """)
     executable.chmod(0o755)
-    target = subprocess.Popen([sys.executable, '-c', PROGRAM])
-    env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'])
-    capture = output / 'owned-telemetry'
-    observer = subprocess.Popen([sys.executable, '-m', 'perfkit.monitor', '--seconds', '30',
-        '--interval', '.1', '--discovery-interval', '.1', '--include-name', '^rp_(worker|tegra)$',
-        '--active-cpu-percent', '0', '--jetson-telemetry', '--output', str(capture)], env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    child = None
+    owner = OwnedProcesses()
+    observer = None
     try:
+        target = subprocess.Popen([sys.executable, '-c', PROGRAM])
+        owner.add(target)
+        env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'])
+        capture = output / 'owned-telemetry'
+        observer = subprocess.Popen([sys.executable, '-m', 'perfkit.monitor', '--seconds', '30',
+            '--interval', '.1', '--discovery-interval', '.1', '--include-name', '^rp_(worker|tegra)$',
+            '--active-cpu-percent', '0', '--jetson-telemetry', '--output', str(capture)], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        owner.add(observer)
+        child = None
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             rows = capture / 'resources.jsonl'
             raw = capture / 'resources-tegrastats.jsonl'
             if rows.exists() and raw.exists() and 'GR3D' in raw.read_text():
-                children = Path('/proc', str(observer.pid), 'task', str(observer.pid), 'children').read_text().split()
+                children = owner.discover({'rp_tegra': 'telemetry'})
                 if children:
-                    child = int(children[0])
+                    assert len(children) == 1
+                    child = children[0]
                     break
             if observer.poll() is not None:
                 raise AssertionError(observer.stderr.read().decode())
             time.sleep(.05)
         assert child is not None
         time.sleep(.7)
-        observer.send_signal(signal.SIGTERM)
+        owner.signal(observer, signal.SIGTERM)
         assert observer.wait(timeout=10) == 130
         summary = json.loads((capture / 'monitor-summary.json').read_text())
         telemetry = summary['resources']['jetson_telemetry']
@@ -139,19 +149,18 @@ while True:
         assert telemetry['value_ranges']['gpu_utilization_percent']['max'] == 0
         assert summary['quality']['peak_registered_targets'] == 1
         for line in (capture / 'discovery.jsonl').read_text().splitlines():
-            assert child not in json.loads(line)['registered_pids']
-        assert not Path('/proc', str(child)).exists(), 'owned telemetry child survived cancellation'
+            assert child.pid not in json.loads(line)['registered_pids']
+        assert not child.exists(), 'owned telemetry child survived cancellation'
         assert target.poll() is None, 'external target was signalled'
         (output / 'owned-telemetry-verification.json').write_text(json.dumps({
             'owned_child_excluded': True, 'owned_child_reaped': True, 'external_target_survives': True,
             'unique_samples': telemetry['unique_samples'], 'status': summary['status']}, indent=2) + '\n')
     finally:
-        if observer.poll() is None:
-            observer.terminate()
-            observer.wait(timeout=5)
-        observer.stderr.close()
-        target.terminate()
-        target.wait(timeout=5)
+        try:
+            owner.cleanup()
+        finally:
+            if observer is not None and observer.stderr is not None:
+                observer.stderr.close()
 
 
 if __name__ == '__main__':

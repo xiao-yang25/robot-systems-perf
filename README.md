@@ -53,6 +53,14 @@ REQUIRE_JETSON=1 ENVIRONMENT_KIND=jetson-native \
   ./scripts/run-native.sh configs/jetson-suite.json results/orin-native suite
 ```
 
+只验证周期任务时，Linux 上无需 ROS，入口仅构建 `periodic_bench`：
+
+```bash
+./scripts/run-native.sh configs/s01-only.json results/s01-native
+```
+
+需要 CMake、C++17 编译器和 Python 3.10+；该配置的 1 ms 截止期是参考条件，不能直接作为业务达标线。
+
 ## 采集现有业务
 
 已运行的宿主 ROS 2 节点/组件容器可直接采集，无需重启业务或构建 C++。在仓库目录安装一次（Python 3.9+）：
@@ -66,13 +74,15 @@ python3 -m pip install .
 之后在该环境激活的任意目录运行，无需配置文件：
 
 ```bash
-robot-perf-monitor --require-jetson --include-name '^component_conta' \
+robot-perf-monitor --profile light --require-jetson --include-name '^component_conta' \
   --output results/orin-business-001
 ```
 
-默认发现当前用户 CPU 活跃候选，示例名称规则额外纳入组件容器；默认同时最多64个进程，每个进程动态采集线程，可用 `--max-targets` 调到1..256。多个PID或名称可重复指定相应参数。算法语义、组件内部各节点/回调耗时需要另外关联。源码的 `python3 -m perfkit.monitor` 入口仍保留；多进程、离线安装和其他用户范围见 [业务采集指南](docs/BUSINESS_MONITOR.md)。
+默认发现当前用户 CPU 活跃候选，示例名称规则额外纳入组件容器；不开profile时最多64个进程且动态采集线程，可用 `--max-targets` 调到1..256。上述light示例最多256个进程、关闭线程。多个PID或名称可重复指定相应参数。算法语义、组件内部各节点/回调耗时需要另外关联。源码的 `python3 -m perfkit.monitor` 入口仍保留；多进程、离线安装和其他用户范围见 [业务采集指南](docs/BUSINESS_MONITOR.md)。
 
 0.4 支持系统、进程、线程独立采样周期与线程名称/TID筛选，记录采集进程CPU、阶段成本和各层覆盖。通用起点见 `configs/jetson-business-basic.json`；可选 `--jetson-telemetry`，缺失接口保留null与原因，EMC活动百分比不代表精确带宽。设计取舍和两阶段推进方式见 [架构设计](docs/ARCHITECTURE.md)。
+
+内建 `--profile light` 每秒采集系统/进程、关闭线程；`--profile full` 每0.5秒包含全部可见线程。两者最多256个目标、跳过温度、不预设开销预算；配置文件和命令行可覆盖。降低频率或关闭线程改变覆盖，不能记作同范围优化。已有明确服务 cgroup 时，可用 `--cgroup-pattern` 配合 `--cgroup-prefilter` 减少范围外的详情读取，默认关闭。
 
 读取业务结果目录的 `MONITOR_REPORT.md`、`monitor-summary.json` 和 `discovery.jsonl`；无目标或覆盖不足会提示复核。
 

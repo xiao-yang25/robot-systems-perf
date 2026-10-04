@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "purpose": "standalone_S01_reference_not_business_acceptance",
+  "warmup_seconds": 1,
+  "measurement_seconds": 15,
+  "repetitions": 2,
+  "drain_seconds": 1,
+  "resource_sampling_seconds": 0.5,
+  "scenarios": [
+    {
+      "id": "S01",
+      "frequency_hz": 1000,
+      "work_us": 50,
+      "deadline_us": 1000,
+      "cpu_interference_workers": 0
+    }
+  ],
+  "resource_options": {
+    "skip_temperatures": true
+  }
+}

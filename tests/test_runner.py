@@ -16,9 +16,44 @@ class RunnerContractTests(unittest.TestCase):
         self.config = json.loads((Path(__file__).resolve().parents[1] / 'configs/smoke.json').read_text())
 
     def test_both_checked_in_configs_are_supported(self):
-        for name in ('smoke', 'baseline'):
+        for name in ('smoke', 'baseline', 's01-only'):
             config = json.loads((Path(__file__).resolve().parents[1] / f'configs/{name}.json').read_text())
             validate(config)
+
+    def test_optional_type_error_degrades_and_direct_environment_records_view(self):
+        with patch.object(Path, 'read_text', side_effect=TypeError('synthetic optional interface')):
+            self.assertIsNone(runner.read_optional('/sys/optional'))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(runner.os.environ, {}, clear=True), \
+                patch.object(runner, 'read_optional', return_value=None), \
+                patch.object(runner, 'command_optional', return_value=None), \
+                patch('perfkit.platform_probe.collect_profile', return_value={'format_version': 1}) as profile:
+            recorded = runner.environment(Path(directory))
+        self.assertEqual(recorded['host_profile_source'], 'local_process_view_at_startup')
+        self.assertEqual(recorded['host_profile'], {'format_version': 1})
+        profile.assert_called_once_with(include_kernel_command_line=False)
+
+    def test_standalone_s01_requires_only_periodic_binary_and_records_hash(self):
+        config = copy.deepcopy(self.config)
+        config['scenarios'] = [config['scenarios'][1]]
+        config['sampling_mode'] = 'minimal'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'build').mkdir()
+            (root / 'build/periodic_bench').write_bytes(b'independent known binary bytes')
+            output = root / 'output'
+            with patch.object(runner, 'environment', return_value={}), \
+                    patch.object(runner, 'run_one', return_value={'measurement_window': {'start_ns': 1, 'end_ns': 2}}), \
+                    patch.object(runner, 'measurement_quality', return_value={}), \
+                    patch('perfkit.analysis.write_report'):
+                runner.run_experiment(config, output, root)
+            recorded = json.loads((output / 'environment.json').read_text())
+            self.assertEqual(recorded['required_binaries'], ['periodic_bench'])
+            import hashlib
+            self.assertEqual(recorded['binary_sha256'], {'periodic_bench': hashlib.sha256(b'independent known binary bytes').hexdigest()})
+            with self.assertRaisesRegex(RuntimeError, 'binary missing'):
+                runner.run_experiment(self.config, root / 'missing-ros', root)
+            self.assertFalse((root / 'missing-ros').exists())
 
     def test_rejects_invalid_or_unbounded_workloads(self):
         cases = [('measurement_seconds', float('nan')), ('repetitions', True),

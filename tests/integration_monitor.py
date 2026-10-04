@@ -1,13 +1,17 @@
 """Linux external-process checks; fixture ownership belongs only to this test."""
 import argparse
 import json
-import os
 from pathlib import Path
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tests.process_helpers import OwnedProcesses
 
 ROOT = Path(__file__).resolve().parent.parent
 SECRET = 'FIXTURE_ARGUMENT_NOT_FOR_TELEMETRY'
@@ -45,8 +49,9 @@ def records(output):
 
 def spawn(name, owned):
     proc = subprocess.Popen([sys.executable, '-c', PROGRAM, name, SECRET])
-    owned.append(proc)
-    wait_for(lambda: Path(f'/proc/{proc.pid}/comm').read_text().strip() == name)
+    owned.add(proc)
+    wait_for(lambda: owned.handle(proc).alive() and
+             owned.backend.bound_info(owned.handle(proc).directory).comm == name)
     return proc
 
 
@@ -55,23 +60,16 @@ def monitor(output, seconds, owned, *options):
                              '--seconds', str(seconds), '--interval', '.1',
                              '--discovery-interval', '.2', *options], cwd=ROOT,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    owned.append(proc)
+    owned.add(proc)
     return proc
 
 
 def cleanup(owned):
-    for proc in reversed(owned):
-        if proc.poll() is None:
-            proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+    owned.cleanup()
 
 
 def dynamic_discovery(directory):
-    owned = []
+    owned = OwnedProcesses()
     output = directory/'dynamic'
     try:
         original = spawn('rk_busy_fixture', owned)
@@ -80,7 +78,7 @@ def dynamic_discovery(directory):
         idle = spawn('rk_idle_fixture', owned)
         second = spawn('rk_busy_fixture', owned)
         wait_for(lambda: any({idle.pid,second.pid} <= set(row['registered_pids']) for row in records(output)))
-        original.terminate()
+        owned.signal(original, signal.SIGTERM)
         original.wait(timeout=5)
         replacement = spawn('rk_busy_fixture', owned)
         assert observer.wait(timeout=20) == 0
@@ -109,7 +107,7 @@ def dynamic_discovery(directory):
 
 
 def interruption(directory):
-    owned = []
+    owned = OwnedProcesses()
     output = directory/'interrupted'
     try:
         target = spawn('rk_busy_fixture', owned)
@@ -117,7 +115,7 @@ def interruption(directory):
                            '--include-name', '^rk_busy_fixture$')
         wait_for(lambda: any(target.pid in row['registered_pids'] for row in records(output)))
         time.sleep(.4)
-        observer.send_signal(signal.SIGTERM)
+        owned.signal(observer, signal.SIGTERM)
         assert observer.wait(timeout=10)==130
         assert target.poll() is None, 'Monitor cancellation signalled external target'
         assert json.loads((output/'monitor-status.json').read_text())['status']=='interrupted'
@@ -130,11 +128,11 @@ def interruption(directory):
 
 
 def main():
-    if sys.platform != 'linux':
-        raise SystemExit('These integration checks require Linux')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, help='Keep evidence in a new directory')
     args = parser.parse_args()
+    if sys.platform != 'linux':
+        raise SystemExit('These integration checks require Linux')
     if args.output:
         args.output.mkdir(parents=True, exist_ok=False)
         dynamic_discovery(args.output)
