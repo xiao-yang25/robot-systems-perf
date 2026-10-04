@@ -6,6 +6,43 @@
 
 适配目标是不同 Orin/Thor 部署下的通用基础能力，不绑定固定算法、服务名或现场源码。基础采集保持独立可用；外部工具按设备能力和诊断需求选择。平台适配、合成基准、真实业务链路分别验收，详细边界见 [性能规划](../PERFORMANCE_PLAN.md)。
 
+## 当前版本与成熟工具的对照（2026-10-04）
+
+本节以 `70d6d82` 的已实现能力为基线，重新核对上游文档。能力对照、开发环境短校验与目标设备性能比较分别说明；不以工具名、实现语言或“低开销”描述给出性能排名。
+
+| 比较对象 | 与本项目的重叠 | 外部工具补足的证据 | 口径及部署边界 | 当前取舍 |
+| --- | --- | --- | --- | --- |
+| [sysstat / pidstat](https://man7.org/linux/man-pages/man1/pidstat.1.html)、mpstat | 进程/线程CPU、RSS、缺页、切换与每核CPU | 更成熟的通用采样及I/O/系统历史观察 | 对齐单位、节拍、PID/TID、观测窗口；pidstat不加 `-I` 才保留单核=100%口径 | 优先交叉校验共同指标，再测相同范围下的成本；不先重写资源后端 |
+| [rt-tests / cyclictest](https://www.kernel.org/pub/linux/utils/rt-tests/) | 周期线程计划唤醒到实际唤醒的偏差 | 独立验证主机唤醒尾部；结合 [RTLA timerlat](https://docs.kernel.org/tools/rtla/rtla-timerlat.html) 分辨IRQ与线程定时器延迟 | S01从计划释放到工作完成的响应与唤醒延迟不同；先用零工作S01对齐时钟、调度、绑定、节拍与负载 | 保留S01工作/期限参考，复用实时性诊断工具 |
+| NVIDIA [tegrastats](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/AT/JetsonLinuxDevelopmentTools/TegrastatsUtility.html) | GPU/EMC活动、频率及部分整机指标 | BSP实际支持的原始硬件字段 | 是整机观测，不能按进程归属；频率可读不等于活动百分比可读 | 已有可选后端；先核对原始行、字段原因和单位，不重复实现底层硬件探针 |
+| ROS 2 [ros2_tracing](https://github.com/ros2/ros2_tracing) / [CARET](https://tier4.github.io/caret_doc/main/installation/installation/) | ROS发布与回调相关观察 | 可用ROS事件、回调执行与路径分析；另配内核追踪观察调度 | 需匹配ROS分支、启用tracepoints并保留初始化元数据；现有事件不保证涵盖DDS线上的发送/接收或executor ready | 优先用于长尾诊断和真实业务事件关联，避免自行重建完整tracer |
+| NVIDIA [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) | 线程/CPU活动与GPU观测 | CPU采样、线程切换、CUDA/kernel/传输/同步时间线 | Jetson需匹配Embedded版及驱动/权限；采样或上下文切换不能独自证明DDS内部原因 | 作为按需深度诊断工具，保留本项目批量基线和验收 |
+| NVIDIA [ros2_benchmark](https://github.com/NVIDIA-ISAAC-ROS/ros2_benchmark) / Apex.AI [performance_test](https://gitlab.com/ApexAI/performance_test) | ROS图或pub/sub吞吐、延迟及实验组织 | 真实图输入/输出监测或独立通信基准 | 起止边界、载荷、QoS、拓扑与交付分母不同，不能直接比较报告中同名P99；ros2_benchmark文档列Humble/ARM64与Orin，不能据此宣称Thor全栈验证 | 有应用图后选择一种补充基准；当前不增加全部工具依赖 |
+
+本项目保留的主要价值是：通用范围选择与动态身份、环境/二进制指纹、原始证据、输入与交付校验、重复ABBA和未配置预算状态。共同资源指标可以由外部工具核对；ROS内部、内核和GPU事件诊断宜复用已有工具。现有资源观察仍不能给任意算法的业务链期限结论。
+
+### 已完成的有限开发对照
+
+本轮仅在Docker Desktop原生ARM64 Linux VM执行一次8秒联合采集：同一个自有49线程夹具，资源采样与pidstat均为1秒节拍。sysstat由已下载且SHA256匹配的公开快照 `c41a97b2e4f025c932c55980ed8e595df6596c19` 离线构建，版本输出12.8.1；未安装到宿主，也未改变项目运行依赖。
+
+| 共同指标 | 本项目 | pidstat | 解释 |
+| --- | ---: | ---: | --- |
+| 目标进程CPU，单核=100% | 57.50% | 57.63% | 两者接近；独立读取时刻不同，不能要求严格相等 |
+| 目标进程RSS | 8644 KiB采样峰值 | 8644 KiB区间平均 | 此夹具RSS稳定，换算一致；峰值和均值一般不能互换 |
+| 线程覆盖 | 每个资源快照49线程，9个快照 | 启用线程CPU/RSS/切换输出 | 共同对象观察；共享内存不能按线程RSS求和 |
+
+本次只验证该夹具的共同指标量级与单位。资源采样额外读取system/cgroup/schedstat/affinity，pidstat有不同输出与成本，窗口也不是严格同步；联合采集不能作为隔离开销排名，没有执行多轮同覆盖性能比较，也不包含业务自动发现成本。原始开发证据在忽略的 `results/tool-comparison-20261004`。
+
+本机基础镜像未发现cyclictest、perf、LTTng或Nsight可执行文件。除了上述pidstat校验，其余本轮是文档与源码能力对照，不冒充安装、运行或Jetson设备验收。
+
+### 下一轮只做三项设备对照
+
+1. **资源统计与开销**：先选固定夹具或受控业务范围，共同采样节拍设为1秒，做一次共同CPU/RSS/缺页/切换校验。随后无采集、本项目、pidstat分别执行，各3轮、每轮60秒、交错顺序；记录实际覆盖、目标输入、观测进程及自有子进程总CPU、输出量和业务响应。共同字段比较与完整功能比较分开，不拿本项目0.5秒全量与pidstat1秒CPU单项直接排名。
+2. **周期唤醒**：S01零工作与cyclictest分别各3轮60秒；固定实际调度策略/优先级、CPU绑定、时钟、内存锁定、电源和后台负载。对比唤醒分布、样本数、直方图溢出及最大值；原50µs工作场景另列。RTLA仅在现有BSP支持时作为诊断补充，不为比较刷机或重建内核。
+3. **通信长尾**：先核验与该ROS发行版匹配的tracepoints和初始化记录，再用固定30Hz/1MiB/depth64负载，Fast/Cyclone交错各3轮60秒。记录回调与可用调度事件、丢失事件和trace开销；事件需有关联依据，不能只按相邻时间戳拼成因果链。未覆盖DDS发送/接收、take或executor ready时保留缺口，不能宣称根因已定位。
+
+周期和重复次数是本轮实验范围，不是业务达标阈值。所有性能预算继续按 [验收模板](ACCEPTANCE.md) 待填；结果只给共同口径一致性、观测成本、可用证据和剩余缺口。既定重复完成即停止：没有复现长尾就报告未复现，不继续无限加轮次；工具环境不可用时记录具体原因，本轮不扩展安装体系。Nsight、CARET和真实算法图基准仅在上述证据显示需要时另立有限任务。
+
 ## 官方与上游工具
 
 | 工具与来源 | 主要能力 | 对本项目的用途与边界 |
