@@ -156,6 +156,6 @@ robot-perf-monitor --require-jetson --system-interval 0.5 --process-interval 0.5
 
 开启 `--jetson-telemetry --jetson-interval 1` 后读取自有 tegrastats 进程。工具缺失、权限或BSP不兼容不会阻止基础采集，报告提示无有效遥测。多GPC频率独立记录；EMC活动百分比不能换算成GB/s。owned遥测子进程从业务候选中排除，退出不会停止其他已运行的tegrastats。
 
-新证据包括 `resources-costs.jsonl`，开启遥测时另有 `resources-tegrastats.jsonl` 和 `.stderr.log`。摘要新增各层覆盖、采集进程CPU、阶段成本、线程范围、遥测字段原因与预算。示例 `--max-cycle-fraction 0.2 --max-observer-cpu-percent 5` 只是用户设定预算的方式，数值不是Orin/Thor的推荐达标线。周期成本不含成本日志自身写入，采集进程CPU不含tegrastats子进程；预算状态不能代替业务无采集对照。
+新证据包括 `resources-costs.jsonl`，开启遥测时另有 `resources-tegrastats.jsonl` 和 `.stderr.log`。摘要记录各层覆盖、采集进程CPU、阶段墙钟/线程CPU成本、线程范围、遥测字段原因与预算。示例 `--max-cycle-fraction 0.2 --max-observer-cpu-percent 5` 只是用户设定预算的方式，数值不是Orin/Thor的推荐达标线。周期成本不含成本日志自身写入；`observer.cpu_percent_one_core` 保留父进程口径，`observer.total_cpu_percent_one_core` 增加自有tegrastats子进程共同有效区间的成本，CPU预算采用后者。开启遥测但子进程CPU存在缺口时，预算显示无法评估；预算状态不能代替业务无采集对照。优化和缓存边界见 [架构说明](ARCHITECTURE.md)，同覆盖复测与脱敏交接见 [设备指南](JETSON_RUNBOOK.md#同覆盖复测)。
 
 详细职责、窗口与计数口径、第一阶段/第二阶段推进顺序见 [架构设计](ARCHITECTURE.md)。

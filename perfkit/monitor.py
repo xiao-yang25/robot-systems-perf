@@ -16,7 +16,7 @@ import time
 from .discovery import DiscoverySelector, scan_processes
 from .lifecycle import defer_interrupts
 from .platform_probe import collect_profile
-from .resources import ResourceSampler, summarize_resources, validate_resource_options
+from .resources import ResourceSampler, summarize_resources, validate_resource_options, _Costs
 
 
 LIMITS = [
@@ -146,6 +146,8 @@ def run_monitor(config, output, proc_root=Path('/proc')):
     interrupted = None
     peak_selected = omitted_scans = skipped_process_reads = 0
     discovery_duration_sum = discovery_duration_max = discovery_overruns = 0
+    discovery_cpu_sum = discovery_cpu_max = 0
+    discovery_phases, discovery_cpu_phases = _Costs(), _Costs()
     discovery_gap_sum = discovery_gap_count = discovery_gap_max = 0
     discovery_gap_min = previous_scan_start = None
     skipped_discovery_deadlines = 0
@@ -190,9 +192,12 @@ def run_monitor(config, output, proc_root=Path('/proc')):
                             discovery_gap_max = max(discovery_gap_max, gap)
                             discovery_gap_min = gap if discovery_gap_min is None else min(discovery_gap_min, gap)
                         previous_scan_start = scan_start
+                        scan_cpu_start = time.thread_time_ns()
                         observer_children = getattr(sampler, 'owned_process_ids', lambda: ())()
-                        inventory = scan_processes(proc_root, exclude_pids=(os.getpid(),) + observer_children)
+                        inventory = scan_processes(proc_root, exclude_pids=(os.getpid(),) + observer_children,
+                                                   _scope=selector)
                         now = time.monotonic_ns()
+                        read_cpu_end = time.thread_time_ns()
                         decision = selector.update(inventory['processes'], now)
                         targets = {item['pid']: item for item in decision['targets']}
                         changes = []
@@ -216,12 +221,31 @@ def run_monitor(config, output, proc_root=Path('/proc')):
                         peak_selected = max(peak_selected, len(selected))
                         omitted_scans += decision['selection']['omitted_count'] > 0
                         skipped_process_reads += inventory['scan'].get('skipped_count', 0)
-                        stream.write(json.dumps({'monotonic_ns': now, 'scan_start_ns': scan_start,
+                        selection_end, selection_cpu_end = time.monotonic_ns(), time.thread_time_ns()
+                        payload = json.dumps({'monotonic_ns': now, 'scan_start_ns': scan_start,
                             'scan': inventory['scan'], 'selection': decision['selection'],
                             'targets': decision['targets'], 'registered_pids': sorted(selected),
-                            'changes': changes}, ensure_ascii=False, allow_nan=False) + '\n')
+                            'changes': changes,
+                            'read_selection_cost': {'read_ns': now - scan_start,
+                                'selection_registration_ns': selection_end - now,
+                                'read_thread_cpu_ns': read_cpu_end - scan_cpu_start,
+                                'selection_registration_thread_cpu_ns': selection_cpu_end - read_cpu_end}},
+                            ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n'
+                        encode_end, encode_cpu_end = time.monotonic_ns(), time.thread_time_ns()
+                        stream.write(payload)
                         stream.flush()
                         scan_finished = time.monotonic_ns()
+                        scan_cpu_finished = time.thread_time_ns()
+                        for name, wall, cpu in (
+                                ('read', now - scan_start, read_cpu_end - scan_cpu_start),
+                                ('selection_registration', selection_end - now, selection_cpu_end - read_cpu_end),
+                                ('encode', encode_end - selection_end, encode_cpu_end - selection_cpu_end),
+                                ('write_flush', scan_finished - encode_end, scan_cpu_finished - encode_cpu_end)):
+                            discovery_phases.add(name, wall)
+                            discovery_cpu_phases.add(name, cpu)
+                        cpu_duration = scan_cpu_finished - scan_cpu_start
+                        discovery_cpu_sum += cpu_duration
+                        discovery_cpu_max = max(discovery_cpu_max, cpu_duration)
                         duration = scan_finished - scan_start
                         discovery_duration_sum += duration
                         discovery_duration_max = max(discovery_duration_max, duration)
@@ -283,6 +307,11 @@ def run_monitor(config, output, proc_root=Path('/proc')):
                                    'discovery': {'duration_ns': {'count': status['scans'],
                                        'mean_ns': discovery_duration_sum / status['scans'] if status['scans'] else None,
                                        'max_ns': discovery_duration_max if status['scans'] else None},
+                                       'thread_cpu_ns': {'count': status['scans'],
+                                           'mean_ns': discovery_cpu_sum / status['scans'] if status['scans'] else None,
+                                           'max_ns': discovery_cpu_max if status['scans'] else None},
+                                       'phase_costs_ns': discovery_phases.result(),
+                                       'phase_thread_cpu_ns': discovery_cpu_phases.result(),
                                        'scan_start_interval_ns': {'count': discovery_gap_count,
                                            'mean_ns': discovery_gap_sum / discovery_gap_count if discovery_gap_count else None,
                                            'min_ns': discovery_gap_min,

@@ -66,49 +66,80 @@ def _cgroup_paths(text):
     return paths
 
 
-def scan_processes(proc_root=Path('/proc'), exclude_pids=()):
+def scan_processes(proc_root=Path('/proc'), exclude_pids=(), *, _scope=None):
     """Scan visible proc PIDs, skipping unverifiable identities with reason counts.
 
     Proc root iteration errors propagate; inaccessible individual processes do
     not invalidate other observations. An unavailable exe link is optional and
     never establishes that a process is a kernel thread.
+
+    The monitor's private scope hint applies hard UID/cgroup/kernel filters
+    before optional detail reads. Explicit-PID mode skips other PIDs only when
+    both activity and name discovery are disabled. Filtered counters are not
+    published, so leaving scope breaks activity history upon re-entry.
     """
     root = Path(proc_root)
     excluded = set(exclude_pids)
     # Materialize iteration before per-process handling so root failures raise.
-    entries = sorted((path for path in root.iterdir()
-                      if path.name.isascii() and path.name.isdecimal()),
-                     key=lambda path: int(path.name))
+    with os.scandir(root) as directory:
+        entries = sorted(int(entry.name) for entry in directory
+                         if entry.name.isascii() and entry.name.isdecimal())
+    explicit_only = _scope is not None and _scope.active == 0 and not _scope.include
     processes = []
     scan = {'candidate_count': len(entries), 'process_count': 0,
             'skipped_count': 0, 'excluded_count': 0,
             'skipped_by_reason': {}, 'optional_unavailable_by_reason': {}}
-    for base in entries:
-        pid = int(base.name)
+    if _scope is not None:
+        scan.update(scope_filtered_count=0, scope_filtered_by_reason={},
+                    mode='explicit_pids' if explicit_only else 'scoped_discovery')
+
+    def filtered(reason):
+        scan['scope_filtered_count'] += 1
+        _increment(scan['scope_filtered_by_reason'], reason)
+
+    for pid in entries:
         if pid in excluded:
             scan['excluded_count'] += 1
             continue
+        if explicit_only and pid not in _scope.pids:
+            filtered('pid_scope')
+            continue
+        base = root / str(pid)
         field = 'stat'
         try:
-            stat, flags = _stat((base / 'stat').read_text(encoding='utf-8'), pid)
+            stat_path = base / 'stat'
+            stat, flags = _stat(stat_path.read_text(encoding='utf-8'), pid)
             field = 'status'
             uid, kernel = _identity_status((base / 'status').read_text(encoding='utf-8'))
             if uid is None:
                 scan['skipped_count'] += 1
                 _increment(scan['skipped_by_reason'], 'uid_unknown')
                 continue
+            # Scope is read afresh: a live process can change UID or cgroup.
+            # Never publish resource counters for an early-filtered identity.
+            if _scope is not None:
+                if _scope.uids is not None and uid not in _scope.uids:
+                    filtered('uid_scope')
+                    continue
+                if kernel or flags & PF_KTHREAD:
+                    filtered('kernel_thread')
+                    continue
             try:
                 cgroups = _cgroup_paths((base / 'cgroup').read_text(encoding='utf-8'))
             except (OSError, ValueError, UnicodeError) as error:
                 cgroups = []
                 _increment(scan['optional_unavailable_by_reason'], _failure('cgroup', error))
+            if _scope is not None and _scope.cgroups and not any(
+                    pattern.search(path) for pattern in _scope.cgroups for path in cgroups):
+                filtered('cgroup_scope')
+                continue
             try:
                 exe_name = Path(os.readlink(base / 'exe')).name or None
             except OSError as error:
                 exe_name = None
                 _increment(scan['optional_unavailable_by_reason'], _failure('exe', error))
             field = 'stat_verify'
-            verify, _ = _stat((base / 'stat').read_text(encoding='utf-8'), pid)
+            verify, _ = _stat(stat_path.read_text(encoding='utf-8'), pid)
             if verify['starttime_ticks'] != stat['starttime_ticks']:
                 scan['skipped_count'] += 1
                 _increment(scan['skipped_by_reason'], 'identity_changed')

@@ -156,6 +156,9 @@ def _meminfo(text):
 def _status(text):
     selected = {}
     for line in text.splitlines():
+        if not line.startswith(('voluntary_ctxt_switches:', 'nonvoluntary_ctxt_switches:',
+                                'Cpus_allowed_list:')):
+            continue
         key, sep, value = line.partition(':')
         if not sep:
             continue
@@ -195,18 +198,24 @@ def _cgroup_path(pid):
     return None, 'cgroup v2 unified hierarchy unavailable'
 
 
-def _task(path, page_size):
-    stat, reason = _read(path / 'stat', parse_task_stat)
+def _task_paths(path):
+    return path / 'stat', path / 'schedstat', path / 'status'
+
+
+def _task(path, page_size, paths=None, initial_stat=None, name_patterns=()):
+    stat_path, sched_path, status_path = paths if paths is not None else _task_paths(path)
+    stat, reason = (initial_stat, None) if initial_stat is not None else _read(stat_path, parse_task_stat)
     if stat is None:
         return {'stat': None, 'schedstat': None, 'status': None,
                 'availability': {'stat': reason, 'schedstat': 'task unavailable',
                                  'status': 'task unavailable'}}
-    sched, sched_reason = _read(path / 'schedstat', _schedstat)
-    status, status_reason = _read(path / 'status', _status)
-    verify, verify_reason = _read(path / 'stat', parse_task_stat)
-    if verify is None or verify['starttime_ticks'] != stat['starttime_ticks']:
+    sched, sched_reason = _read(sched_path, _schedstat)
+    status, status_reason = _read(status_path, _status)
+    verify, verify_reason = _read(stat_path, parse_task_stat)
+    if verify is None or verify['starttime_ticks'] != stat['starttime_ticks'] or (
+            name_patterns and not any(pattern.search(verify['comm']) for pattern in name_patterns)):
         return {'stat': None, 'schedstat': None, 'status': None,
-                'availability': {'stat': verify_reason or 'task identity changed',
+                'availability': {'stat': verify_reason or 'task identity/name changed',
                                  'schedstat': 'task identity not verified',
                                  'status': 'task identity not verified'}}
     stat['rss_bytes'] = stat['rss_pages'] * page_size if page_size else None
@@ -260,6 +269,12 @@ class ResourceSampler:
         self._stream = None
         self._page_size = _sysconf('SC_PAGE_SIZE')
         self._clock_ticks = _sysconf('SC_CLK_TCK')
+        # Paths only: no open descriptors, counter values or identity decisions.
+        # Each cache is replaced by the last acquisition of that source.
+        self._process_paths = {}
+        self._thread_paths = {}
+        self._system_inventory = None
+        self._inventory_refreshed_ns = None
 
     def register(self, pid, role, expected_starttime_ticks=None):
         pid = int(pid)
@@ -336,39 +351,51 @@ class ResourceSampler:
                             self.error = self.error or type(exc).__name__ + ': ' + str(exc)
         return False
 
-    def _system(self):
-        cpus, cpu_reason = _read(PROC_ROOT / 'stat', parse_cpu_stat)
-        memory, memory_reason = _read(PROC_ROOT / 'meminfo', _meminfo)
-        sched_enabled, enabled_reason = _read(PROC_ROOT / 'sys/kernel/sched_schedstats', int)
-        temperatures = {}
+    def _refresh_system_inventory(self, now):
+        temperatures, frequencies, rails, devices = [], [], [], []
         for path in ([] if self.options['skip_temperatures'] else
                      sorted((SYS_ROOT / 'class/thermal').glob('thermal_zone*/temp'))):
-            value, reason = _read(path, lambda text: int(text.strip()) / 1000)
             label, _ = _read(path.parent / 'type')
-            temperatures[path.parent.name] = {'celsius': value, 'label': label, 'reason': reason}
-        frequencies = {}
+            temperatures.append((path, path.parent.name, label))
         for cpu in sorted((SYS_ROOT / 'devices/system/cpu').glob('cpu[0-9]*')):
             if not cpu.name[3:].isdigit():
                 continue
             # scaling_cur_freq may be a driver estimate, not a measured clock.
-            path = cpu / 'cpufreq/scaling_cur_freq'
-            value, reason = _read(path, int)
-            frequencies[cpu.name] = {'khz': value, 'source': 'scaling_cur_freq', 'reason': reason}
-        rails = {}
+            frequencies.append((cpu / 'cpufreq/scaling_cur_freq', cpu.name))
         for path in sorted((SYS_ROOT / 'class/hwmon').glob('hwmon*/power*_input')):
-            value, reason = _read(path, int)
             label, _ = _read(path.with_name(path.name.replace('_input', '_label')))
             chip, _ = _read(path.parent / 'name')
-            rails[path.parent.name + '/' + path.name] = {
-                'microwatts': value, 'label': label, 'chip': chip,
-                'source': 'hwmon_power_input', 'reason': reason}
-        device_frequencies = {}
+            rails.append((path, path.parent.name + '/' + path.name, label, chip))
         for path in sorted((SYS_ROOT / 'class/devfreq').glob('*/cur_freq')):
             name = path.parent.name
             label, _ = _read(path.parent / 'name')
             words = set(re.split(r'[^a-z0-9]+', (name + ' ' + (label or '')).lower()))
             if not words & {'gpu', 'emc', 'ga10b', 'gv11b', 'gb20b'}:
                 continue
+            devices.append((path, name))
+        self._system_inventory = temperatures, frequencies, rails, devices
+        self._inventory_refreshed_ns = now
+
+    def _system(self):
+        now = time.monotonic_ns()
+        if self._system_inventory is None or now - self._inventory_refreshed_ns >= 5_000_000_000:
+            self._refresh_system_inventory(now)
+        cpus, cpu_reason = _read(PROC_ROOT / 'stat', parse_cpu_stat)
+        memory, memory_reason = _read(PROC_ROOT / 'meminfo', _meminfo)
+        sched_enabled, enabled_reason = _read(PROC_ROOT / 'sys/kernel/sched_schedstats', int)
+        temperatures, frequencies, rails, device_frequencies = {}, {}, {}, {}
+        thermal_paths, cpu_paths, rail_paths, device_paths = self._system_inventory
+        for path, name, label in thermal_paths:
+            value, reason = _read(path, lambda text: int(text.strip()) / 1000)
+            temperatures[name] = {'celsius': value, 'label': label, 'reason': reason}
+        for path, name in cpu_paths:
+            value, reason = _read(path, int)
+            frequencies[name] = {'khz': value, 'source': 'scaling_cur_freq', 'reason': reason}
+        for path, name, label, chip in rail_paths:
+            value, reason = _read(path, int)
+            rails[name] = {'microwatts': value, 'label': label, 'chip': chip,
+                           'source': 'hwmon_power_input', 'reason': reason}
+        for path, name in device_paths:
             value, reason = _read(path, int)
             device_frequencies[name] = {'hz': value, 'source': 'devfreq_cur_freq', 'reason': reason}
         return {'per_cpu_ticks': cpus, 'meminfo_bytes': memory['bytes'] if memory else None,
@@ -384,6 +411,8 @@ class ResourceSampler:
                                  'cpu_frequencies': None if frequencies else 'CPU frequency sysfs unavailable',
                                  'rail_power': None if rails else 'hwmon power inputs not exposed',
                                  'device_frequencies': None if device_frequencies else 'named GPU/EMC devfreq not exposed'},
+                'interface_inventory': {'refreshed_monotonic_ns': self._inventory_refreshed_ns,
+                                        'refresh_seconds': 5},
                 'gpu_utilization': None, 'emc_bandwidth': None,
                 'unimplemented': ['gpu_utilization', 'emc_bandwidth']}
 
@@ -395,18 +424,23 @@ class ResourceSampler:
         selection = {'seen': 0, 'sampled': 0, 'omitted': 0,
                      'omitted_by_reason': {}, 'scope': 'configured_thread_selection'}
         if before is None or expected is None or before['starttime_ticks'] != expected:
+            self._thread_paths.pop(registration['pid'], None)
             return None, reason or 'PID identity not verified', selection
         try:
             paths = sorted(path for path in (base / 'task').iterdir() if path.name.isdigit())
             tasks = []
+            old_paths = self._thread_paths.get(registration['pid'], {})
+            current_paths = {}
             for path in paths:
                 selection['seen'] += 1
                 tid = int(path.name)
                 omitted = None
+                stat = None
                 if self._thread_ids and tid not in self._thread_ids:
                     omitted = 'tid_filter'
                 elif self._thread_patterns:
-                    stat, failure = _read(path / 'stat', parse_task_stat)
+                    files = old_paths.get(path) or _task_paths(path)
+                    stat, failure = _read(files[0], parse_task_stat)
                     if stat is None:
                         # Preserve failed reads instead of treating unreadable names as filtered.
                         tasks.append({'tid': tid, 'stat': None, 'status': None, 'schedstat': None,
@@ -420,21 +454,52 @@ class ResourceSampler:
                     reasons = selection['omitted_by_reason']
                     reasons[omitted] = reasons.get(omitted, 0) + 1
                     continue
-                task = _task(path, self._page_size)
+                files = old_paths.get(path) or _task_paths(path)
+                task = _task(path, self._page_size, files, stat, self._thread_patterns)
                 task['tid'] = tid
                 if self._thread_patterns and task.get('stat') is not None and (
                         task['stat']['starttime_ticks'] != stat['starttime_ticks'] or
                         not any(pattern.search(task['stat']['comm']) for pattern in self._thread_patterns)):
                     task = {'tid': tid, 'stat': None, 'status': None, 'schedstat': None,
                             'availability': {'stat': 'thread identity/name changed during selection'}}
+                if task.get('stat') is not None:
+                    current_paths[path] = files
                 tasks.append(task)
                 selection['sampled'] += 1
             after, reason = _read(base / 'stat', parse_task_stat)
             if after is None or after['starttime_ticks'] != expected:
+                self._thread_paths.pop(registration['pid'], None)
                 return None, reason or 'PID identity changed during thread snapshot', selection
+            self._thread_paths[registration['pid']] = current_paths
             return tasks, None, selection
         except OSError as error:
+            self._thread_paths.pop(registration['pid'], None)
             return None, type(error).__name__ + ': ' + str(error), selection
+
+    def _observer(self):
+        children = []
+        pids = self.owned_process_ids()
+        reason = None
+        if self.options['jetson_telemetry'] and not pids:
+            reason = 'owned telemetry child unavailable'
+        for pid in pids:
+            path = PROC_ROOT / str(pid) / 'stat'
+            stat, error = _read(path, parse_task_stat)
+            verify, verify_error = _read(path, parse_task_stat)
+            if (stat is None or verify is None or stat['pid'] != pid or verify['pid'] != pid or
+                    stat['starttime_ticks'] != verify['starttime_ticks'] or
+                    min(stat['utime_ticks'], stat['stime_ticks']) < 0 or not self._clock_ticks):
+                reason = error or verify_error or 'owned child identity/counters not verified'
+                continue
+            children.append({'pid': pid, 'starttime_ticks': stat['starttime_ticks'],
+                             'cpu_time_ns': (stat['utime_ticks'] + stat['stime_ticks']) *
+                             1_000_000_000 // self._clock_ticks})
+        if pids != self.owned_process_ids():
+            reason = 'owned child changed during observation'
+        return {'process_cpu_ns': time.process_time_ns(), 'pid': os.getpid(),
+                'scope': 'whole_collector_process', 'owned_children': children,
+                'owned_children_expected': self.options['jetson_telemetry'],
+                'owned_children_reason': reason}
 
     def _snapshot(self, due=None):
         if due is None:
@@ -446,14 +511,17 @@ class ResourceSampler:
             window = dict(self._window)
         started = time.monotonic_ns()
         processes, cgroups = [], {}
-        source_windows, phase_costs = {}, {}
+        source_windows, phase_costs, phase_cpu_costs = {}, {}, {}
 
         def phase(name, action):
             begin = time.monotonic_ns()
+            cpu_begin = time.thread_time_ns()
             value = action()
+            cpu_end = time.thread_time_ns()
             end = time.monotonic_ns()
             source_windows[name] = {'start_ns': begin, 'end_ns': end}
             phase_costs[name] = end - begin
+            phase_cpu_costs[name] = cpu_end - cpu_begin
             return value
 
         system = phase('system', self._system) if 'system' in due else None
@@ -471,10 +539,12 @@ class ResourceSampler:
                          for registration in registrations]
 
         def read_processes():
+            current_paths = {}
             for process in processes:
                 base = PROC_ROOT / str(process['pid'])
                 expected = process['starttime_ticks']
-                data = _task(base, self._page_size)
+                files = self._process_paths.get(base) or _task_paths(base)
+                data = _task(base, self._page_size, files)
                 if expected is None or not data['stat'] or data['stat']['starttime_ticks'] != expected:
                     data = {'stat': None, 'schedstat': None, 'status': None,
                             'availability': {'stat': process['identity_reason'] or 'PID identity not verified',
@@ -492,8 +562,14 @@ class ResourceSampler:
                 if cgroup:
                     cgroup_paths.add(cgroup)
                 process.update(data, cgroup=cgroup, cgroup_reason=cgroup_reason)
+                if data['stat'] is not None:
+                    current_paths[base] = files
+            self._process_paths = current_paths
 
         def read_threads():
+            current_pids = {process['pid'] for process in processes}
+            self._thread_paths = {pid: paths for pid, paths in self._thread_paths.items()
+                                  if pid in current_pids}
             for process in processes:
                 tasks, reason, selection = self._threads(process)
                 process.update(tasks=tasks, tasks_reason=reason, thread_selection=selection)
@@ -510,8 +586,7 @@ class ResourceSampler:
             phase('cgroup', read_cgroups)
         if 'thread' in due:
             phase('thread', read_threads)
-        observer = phase('observer', lambda: {'process_cpu_ns': time.process_time_ns(),
-                                              'pid': os.getpid(), 'scope': 'whole_collector_process'})
+        observer = phase('observer', self._observer)
         telemetry = self._telemetry.snapshot() if self._telemetry is not None else None
         return {'schema_version': 1, 'monotonic_ns': started,
                 'sample_end_ns': time.monotonic_ns(), 'window': window,
@@ -520,6 +595,7 @@ class ResourceSampler:
                 'system': system, 'processes': processes, 'cgroups': cgroups,
                 'sampler_cgroup': own_cgroup, 'sampler_cgroup_reason': own_reason,
                 'source_windows': source_windows, 'phase_costs_ns': phase_costs,
+                'phase_thread_cpu_ns': phase_cpu_costs,
                 'observer': observer, 'jetson_telemetry': telemetry,
                 'resource_options': self.options,
                 'thread_scope': {'enabled': self.options['collect_threads'],
@@ -540,10 +616,13 @@ class ResourceSampler:
                 sample = self._snapshot(due)
                 sample['cycle_id'] = self._cycle_id
                 encode_start = time.monotonic_ns()
-                payload = json.dumps(sample, allow_nan=False) + '\n'
+                encode_cpu = time.thread_time_ns()
+                payload = json.dumps(sample, allow_nan=False, separators=(',', ':')) + '\n'
+                encode_cpu_end = time.thread_time_ns()
                 encode_end = time.monotonic_ns()
                 self._stream.write(payload)
                 self._stream.flush()
+                write_cpu_end = time.thread_time_ns()
                 write_end = time.monotonic_ns()
                 costs = {'schema_version': 1, 'cycle_id': self._cycle_id,
                          'start_ns': before, 'end_ns': write_end,
@@ -553,8 +632,11 @@ class ResourceSampler:
                          'phase_costs_ns': dict(sample['phase_costs_ns'],
                                                 encode=encode_end - encode_start,
                                                 resource_write_flush=write_end - encode_end),
+                         'phase_thread_cpu_ns': dict(sample['phase_thread_cpu_ns'],
+                             encode=encode_cpu_end - encode_cpu,
+                             resource_write_flush=write_cpu_end - encode_cpu_end),
                          'scope': 'sampler_collection_encoding_resource_write; excludes_cost_record_write'}
-                self._cost_stream.write(json.dumps(costs, allow_nan=False) + '\n')
+                self._cost_stream.write(json.dumps(costs, allow_nan=False, separators=(',', ':')) + '\n')
                 self._cost_stream.flush()
                 finished = time.monotonic_ns()
                 for name in due:
@@ -655,11 +737,11 @@ def summarize_costs(path, start_ns, end_ns):
     """Cost log excludes its own write; CPU observer covers the whole parent process."""
     result = {'available': False, 'reason': 'cost log absent or no complete cycles in window',
               'cycles': 0, 'over_period_cycles': 0, 'cycle_fraction_max': None,
-              'phase_costs_ns': {},
+              'phase_costs_ns': {}, 'phase_thread_cpu_ns': {},
               'scope': 'sampler collection, encoding, resource write/flush; excludes cost-log write and tegrastats child CPU'}
     if not path.exists():
         return result
-    phases, previous = _Costs(), None
+    phases, cpu_phases, previous = _Costs(), _Costs(), None
     with path.open(encoding='utf-8') as stream:
         for number, line in enumerate(stream, 1):
             try:
@@ -681,12 +763,17 @@ def summarize_costs(path, start_ns, end_ns):
                     if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0 or duration > end - begin:
                         raise ValueError('invalid phase cost')
                     phases.add(name, duration)
+                for name, duration in item.get('phase_thread_cpu_ns', {}).items():
+                    if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0:
+                        raise ValueError('invalid phase CPU cost')
+                    cpu_phases.add(name, duration)
                 result['cycles'] += 1
                 result['over_period_cycles'] += fraction > 1
                 result['cycle_fraction_max'] = max(result['cycle_fraction_max'] or 0, fraction)
             except (ValueError, KeyError, TypeError) as error:
                 raise ValueError('invalid cost record at line ' + str(number)) from error
-    result.update(available=result['cycles'] > 0, phase_costs_ns=phases.result())
+    result.update(available=result['cycles'] > 0, phase_costs_ns=phases.result(),
+                  phase_thread_cpu_ns=cpu_phases.result())
     if result['available']:
         result['reason'] = None
     return result
@@ -712,6 +799,10 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
     identity_keys_previous = {'process': set(), 'thread': set()}
     source_coverage, source_previous = {}, {}
     observer_counter = _Counters()
+    total_observer_counter = _Counters()
+    previous_owned_identity = None
+    owned_cpu_unavailable = 0
+    observer_missing_samples = 0
     thread_scope = {'enabled': None, 'name_patterns': [], 'tids': [],
                     'selection': {'seen': 0, 'sampled': 0, 'omitted': 0, 'omitted_by_reason': {}}}
     options = None
@@ -826,6 +917,52 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     raise ValueError('invalid observer CPU counter')
                 observer_counter.add(windows['observer']['start_ns'], {'process_cpu_ns': value})
+                children = observed.get('owned_children')
+                expected = observed.get('owned_children_expected',
+                                        (sample.get('resource_options') or {}).get('jetson_telemetry',
+                                            sample.get('jetson_telemetry') is not None))
+                if not isinstance(expected, bool) or (children is not None and not isinstance(children, list)):
+                    raise ValueError('invalid owned child observation')
+                child_cpu, identity = 0, ()
+                if expected:
+                    if observed.get('owned_children_reason') or not children:
+                        child_cpu = None
+                    else:
+                        identities = []
+                        for child in children:
+                            if not isinstance(child, dict) or not all(key in child for key in
+                                    ('pid', 'starttime_ticks', 'cpu_time_ns')):
+                                raise ValueError('invalid owned child observation')
+                            fields = [child['pid'], child['starttime_ticks'], child['cpu_time_ns']]
+                            if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in fields) or not fields[0]:
+                                raise ValueError('invalid owned child CPU counter')
+                            identities.append((fields[0], fields[1]))
+                            child_cpu += fields[2]
+                        if len(set(identities)) != len(identities):
+                            raise ValueError('duplicate owned child identity')
+                        identity = tuple(sorted(identities))
+                if child_cpu is None:
+                    owned_cpu_unavailable += 1
+                if identity != previous_owned_identity or child_cpu is None:
+                    total_observer_counter.previous = None
+                values = {'parent_cpu_ns': value, 'owned_child_cpu_ns': child_cpu,
+                          'total_cpu_ns': value + child_cpu if child_cpu is not None else None}
+                old = total_observer_counter.previous
+                if old is not None and any(values[key] < old[1][key]
+                        for key in ('parent_cpu_ns', 'owned_child_cpu_ns') if old[1][key] is not None):
+                    total_observer_counter.previous = None
+                total_observer_counter.add(windows['observer']['start_ns'], values)
+                previous_owned_identity = identity
+            else:
+                # Observer is acquired every cycle; absence is a real gap, not
+                # the sparse scheduling used by process/thread sources.
+                observer_counter.previous = None
+                total_observer_counter.previous = None
+                previous_owned_identity = None
+                observer_missing_samples += 1
+                if (sample.get('resource_options') or {}).get('jetson_telemetry',
+                        sample.get('jetson_telemetry') is not None):
+                    owned_cpu_unavailable += 1
             jetson = sample.get('jetson_telemetry')
             if jetson is not None:
                 telemetry['enabled'] = True
@@ -988,6 +1125,16 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
     observer.update(cpu_percent_one_core=100 * observer_cpu / observer_elapsed if observer_elapsed and observer_cpu is not None else None,
                     scope='whole_collector_process; excludes owned tegrastats child CPU',
                     reason=None if observer_elapsed else 'fewer than two valid observer observations')
+    total_observer = total_observer_counter.result(('parent_cpu_ns', 'owned_child_cpu_ns', 'total_cpu_ns'))
+    total_elapsed = total_observer['covered_ns']['total_cpu_ns']
+    total_cpu = total_observer['delta']['total_cpu_ns']
+    observer.update(total_cpu_percent_one_core=100 * total_cpu / total_elapsed if total_elapsed and total_cpu is not None else None,
+                    total_scope='collector process plus owned telemetry child; common valid identity intervals only',
+                    total_coverage=total_observer, owned_child_unavailable_samples=owned_cpu_unavailable,
+                    missing_samples=observer_missing_samples,
+                    total_reason=('owned child CPU missing in some observations' if owned_cpu_unavailable else
+                                  'observer missing in some observations' if observer_missing_samples else
+                                  None if total_elapsed else 'fewer than two valid total CPU observations'))
     telemetry['value_ranges'] = dict.fromkeys(('gpu_utilization_percent', 'gpu_frequency_mhz',
                                               'emc_activity_percent', 'emc_frequency_mhz'))
     telemetry['value_ranges'].update(_finish_ranges(telemetry_ranges) or {})
@@ -1001,14 +1148,19 @@ def summarize_resources(path: Path, start_ns: int, end_ns: int) -> dict:
     costs = summarize_costs(Path(path).with_name(Path(path).stem + '-costs.jsonl'), start_ns, end_ns)
     limits = {key: (options or {}).get(key) for key in ('max_cycle_fraction', 'max_observer_cpu_percent_one_core')}
     observations = {'max_cycle_fraction': costs.get('cycle_fraction_max'),
-                    'max_observer_cpu_percent_one_core': observer['cpu_percent_one_core']}
+                    'max_observer_cpu_percent_one_core': (observer['total_cpu_percent_one_core']
+                        if not owned_cpu_unavailable else None)}
     configured = {key: limit for key, limit in limits.items() if limit is not None}
     missing = [key for key in configured if observations[key] is None]
+    if configured and owned_cpu_unavailable:
+        missing.append('owned_child_cpu_incomplete')
+    if configured and observer_missing_samples:
+        missing.append('observer_cpu_incomplete')
     exceeded = [key for key, limit in configured.items() if observations[key] is not None and observations[key] > limit]
     budget = {'status': 'not_configured' if not configured else
               'not_evaluated' if missing else 'exceeded' if exceeded else 'within_observed_scope',
               'limits': limits, 'observed': observations, 'reasons': missing + exceeded,
-              'scope': 'instrumented sampler cost and collector-process CPU; not business-impact validation'}
+              'scope': 'instrumented sampler cost and collector plus owned-child CPU; not business-impact validation'}
     return {'schema_version': 1, 'window_start_ns': start_ns, 'window_end_ns': end_ns,
             'scope': 'observed_subintervals_inside_CSV_measurement_window; no_boundary_extrapolation',
             'snapshot_inclusion': 'entire_collection_interval_inside_window',

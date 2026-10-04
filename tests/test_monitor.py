@@ -30,6 +30,8 @@ class FakeClock:
         self.now = 1_000_000_000
     def monotonic_ns(self):
         return self.now
+    def thread_time_ns(self):
+        return self.now
     def sleep(self, seconds):
         self.now += round(seconds * 1e9)
 
@@ -101,6 +103,10 @@ class MonitorTests(unittest.TestCase):
                 discovery = summary['quality']['discovery']
                 self.assertEqual(discovery['duration_ns']['mean_ns'], cost)
                 self.assertEqual(discovery['duration_ns']['max_ns'], cost)
+                self.assertEqual(discovery['thread_cpu_ns']['mean_ns'], cost)
+                self.assertEqual(discovery['phase_costs_ns']['read']['mean_ns'], cost)
+                self.assertEqual(discovery['phase_thread_cpu_ns']['read']['mean_ns'], cost)
+                self.assertEqual(discovery['phase_costs_ns']['write_flush']['mean_ns'], 0)
                 self.assertEqual(discovery['over_period_scans'], overruns)
                 self.assertEqual(discovery['skipped_deadlines'], overruns)
                 self.assertEqual(discovery['scan_start_interval_ns']['mean_ns'], expected_starts[1])
