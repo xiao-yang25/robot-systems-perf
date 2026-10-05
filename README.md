@@ -8,6 +8,7 @@
 
 | 模块 | 输出 |
 | --- | --- |
+| M1：新机器只读接入 | 机器档案、逐项接口能力、人工声明、light 建议配置与执行状态；不自动启动性能测试 |
 | C01：ROS 2 同机跨进程通信 | 发送迟到、发布调用耗时、通信/数据年龄/响应时延、实际窗口收发速率与有效载荷吞吐、交付完整性 |
 | S01：Linux 周期任务 | 启动偏差、周期误差、墙钟/CPU/响应时间、截止期违约及超期幅度 |
 | 诊断 | 分位数、直方图、时间分段、尾事件各阶段关联、连续违约；C01 实际 RMW/QoS、映射库摘要与声明配置 |
@@ -73,6 +74,15 @@ source "$HOME/.venvs/robot-systems-perf/bin/activate"
 python3 -m pip install .
 ```
 
+新机器先做只读接入，核对环境与缺口；不需要 ROS 或 C++ 构建：
+
+```bash
+robot-perf-intake --view native-host --require-jetson --machine-id robot-demo \
+  --output results/machine-intake-001
+```
+
+安装后可在任意目录执行。机器代号与平台视图是操作者声明；工具文件存在不代表采样已验证。人工补充模板、五个输出文件与设备复核方法见 [机器接入指南](docs/MACHINE_INTAKE.md)。
+
 之后在该环境激活的任意目录运行，无需配置文件：
 
 ```bash
@@ -104,6 +114,8 @@ docker run --rm --init robot-systems-perf:local env PYTHONPATH=/app python3 test
 
 Docker Desktop 的 Linux VM 结果不能作为 Jetson 基线。Orin/Thor 实机性能、AMD64 和其他 ROS 软件栈需要现场验证，具体执行证据见 [验证记录](VALIDATION.md)。
 
+- [两阶段实施路线](docs/SYSTEMS_ROADMAP.md)：新机器接入、业务节点观测与优化方法资产。
+- [机器接入指南](docs/MACHINE_INTAKE.md)：M1 只读入口、人工补充及能力解释。
 - [性能规划](PERFORMANCE_PLAN.md)：两阶段路线与指标口径。
 - [设备测试指南](docs/JETSON_RUNBOOK.md)：配置、资源限制、结果判断和诊断边界。
 - [平台补充模板](templates/platform-profile.template.json)：人工记录未自动采集的设备与业务条件。

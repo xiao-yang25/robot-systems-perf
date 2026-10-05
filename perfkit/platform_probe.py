@@ -203,7 +203,7 @@ def _collect_capabilities(probe, tools):
     return capabilities
 
 
-def collect_profile(fs_root=Path('/'), include_kernel_command_line=True):
+def collect_profile(fs_root=Path('/'), include_kernel_command_line=True, *, query_power_mode=True):
     probe = _Probe(fs_root)
     def read(path):
         return probe.read(path)[0]
@@ -243,7 +243,9 @@ def collect_profile(fs_root=Path('/'), include_kernel_command_line=True):
             'kernel_command_line': read('/proc/cmdline') if include_kernel_command_line else None,
             'schedstats_enabled': read('/proc/sys/kernel/sched_schedstats'),
             'frequency_policies': frequency_policies,
-            'nvpmodel_readonly': query(['nvpmodel', '-q']),
+            'nvpmodel_readonly': query(['nvpmodel', '-q']) if query_power_mode else {
+                'available': False, 'value': None,
+                'reason': 'not queried: intake runs no external commands'},
             'checks': checks,
             'capabilities': _collect_capabilities(probe, checks['tools']),
             'manual_fields': ['module/carrier details', 'cooling and ambient conditions',
@@ -252,7 +254,8 @@ def collect_profile(fs_root=Path('/'), include_kernel_command_line=True):
                             'Detection is not certification of ROS/BSP compatibility.',
                             'Capabilities describe interface reads, not performance or full attribution support.',
                             'available means at least one successful interface read; per-interface failures are retained.',
-                            'checks.tools reports found != functional; tools were not executed except nvpmodel -q.',
+                            'checks.tools reports found != functional; no tool sampling was tested.',
+                            'nvpmodel -q was requested.' if query_power_mode else 'No external tool query was requested.',
                             'No device serial numbers or host names are collected.']}
 
 

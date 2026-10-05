@@ -105,10 +105,10 @@ def validate_config(config):
     return resolved
 
 
-def _source_record():
+def _source_record(*, query_git=True):
     root = Path(__file__).resolve().parent.parent
     revision = None
-    if (root / '.git').exists():
+    if query_git and (root / '.git').exists():
         try:
             result = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'],
                                     capture_output=True, text=True, timeout=5)

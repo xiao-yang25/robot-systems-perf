@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "module_model": null,
+  "carrier_board": null,
+  "cooling": null,
+  "ambient_conditions": null,
+  "workload_version": null,
+  "ros_distribution": null,
+  "rmw_implementation": null,
+  "power_mode": null
+}
