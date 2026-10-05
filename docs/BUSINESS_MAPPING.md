@@ -2,7 +2,7 @@
 
 M2a 在现有 monitor 上增加业务声明和进程关系输出：每个功能独立选进程，多个功能引用一份资源表。它不查询 ROS 图、不启动 tracing、不读取业务消息，不重启或发送信号给业务。Python 运行仍只依赖标准库；独立节点进程与组件容器都可使用。
 
-用户反馈 0.6.0 在三台 Orin/Thor 上安装集成通过，Orin 完成真实进程的共享资源关联；反馈来自现场摘要，本机未取得原始设备记录。0.6.1 的修补仍需有限复核。声明的 ROS 节点、domain、业务版本和功能语义不因此变成运行时事实。
+用户反馈 0.6.0/0.6.1 在三台 Orin/Thor 上安装集成通过，Orin 完成真实进程的共享资源关联和纯PID四轮版本对照；反馈来自现场摘要，本机未取得原始设备记录。0.6.2 修补最终状态中断叠加摘要/报告错误，需有限复核。声明的 ROS 节点、domain、业务版本和功能语义不因此变成运行时事实。
 
 ## 首次使用
 
@@ -60,6 +60,8 @@ robot-perf-monitor --workload workload.local.json --profile light --seconds 10 \
 
 0.6.1 对可写入的关系流补充异常窗口关闭记录：`observation_ended` 带结束时间、`outcome`（closed/failed/interrupted）及原因类型。closed 只表示观察窗口关闭，最终执行状态以 monitor-status 为准，之后的分析也可能失败。普通失败保存结束时间和原始错误，已有 JSONL 保留，不生成完整指标摘要。次要收尾错误记录在可写状态的 `cleanup_errors`，不覆盖原始异常；若输出介质本身不可写，不能保证新增关闭记录或最终状态成功落盘，命令仍失败。
 
+0.6.2 将迟到中断后的摘要/报告重写与最终状态保存分开。最终状态第一次落盘时收到 SIGTERM，即使随后重写摘要或报告失败，仍独立保存 interrupted 状态及 cleanup_errors，保留原 KeyboardInterrupt 和退出130。执行结果以 monitor-status.json 为准；写失败的摘要或报告可能残留旧状态，按错误记录识别，不把它们解释为采集成功。状态文件本身不可写时仍不能保证落盘；原始 JSONL 不改写。
+
 ## 怎样查看功能资源
 
 先看关系状态，再用资源引用查 monitor-summary 的 `resources.registered_entities`。两个节点或功能共享组件进程时会指向同一记录；这里不复制 CPU/RSS、不按节点数均分，也不将多个功能的同一进程重复求和。
@@ -84,3 +86,17 @@ robot-perf-monitor --workload workload.local.json --profile light --seconds 10 \
 4. 业务扰动另在稳定、可重复的输入下做无采集→采集→采集→无采集各一个相同时长窗口，使用应用自身的同口径吞吐/时延/超时记录。monitor 自身资源记录不能替代无采集业务证据；应用尚无这些指标时保留未评估，不虚构收益或预算通过。
 
 参数顺序、PID 范围与身份、正常/失败/中断收尾通过后即结束本增量功能验收，进入 M2b；性能收益与扰动结论按实际对照证据分别记录。未配置 CPU、周期或扰动预算时继续保持 not_configured，不重跑 C01/S01、DDS 或 GPU 套件。
+
+### 0.6.2 最终状态有限复核
+
+现场反馈已完成0.6.1的三项修补验证及Orin旧→新→新→旧对照，四轮采集开销方向一致；输入波动和有效覆盖差异使业务扰动仍未评估。纯PID结果不推广为名称发现收益。本增量不重复四轮性能对照。
+
+安装0.6.2后，在一台方便的设备执行已有受控安装集成，新增两项场景分别为最终complete状态落盘后真实SIGTERM叠加摘要重写失败、叠加报告重写失败：
+
+```bash
+python3 tests/integration_workload.py \
+  --wheel /path/to/robot_systems_perf-0.6.2-py3-none-any.whl \
+  --output results/final-status-recheck-001
+```
+
+此源码测试需要Linux、venv和预先准备的离线pip引导；不自动下载依赖。它安装到隔离虚拟环境、从无关目录调用已安装入口，并只创建/回收自己的测试对象，不对生产业务发送信号。核对退出130、最终状态interrupted、cleanup_errors包含对应OSError、原始记录不变、外部受控对象存活和采集进程退出。两项通过即结束该修补验证，进入M2b；不要求重跑全量C01/S01、DDS/GPU或真实业务性能窗口。

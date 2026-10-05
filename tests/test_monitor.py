@@ -307,6 +307,58 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(json.loads((output/'monitor-status.json').read_text())['status'], 'interrupted')
             self.assertIn('采集状态：interrupted', (output/'MONITOR_REPORT.md').read_text())
 
+    def final_status_signal_with_rewrite_error(self, phase):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'capture'
+            original_json, original_report = m._json, m.write_monitor_report
+            fired, raw_before = [], {}
+            def write(path, value):
+                if fired and phase == 'summary' and path.name == 'monitor-summary.json':
+                    raise OSError('controlled summary rewrite failure')
+                result = original_json(path, value)
+                if path.name == 'monitor-status.json' and value['status'] == 'complete' and not fired:
+                    fired.append(True)
+                    for name in ('resources.jsonl', 'discovery.jsonl'):
+                        raw_before[name] = (output / name).read_bytes()
+                    os.kill(os.getpid(), signal.SIGTERM)
+                return result
+            def report(*args):
+                if fired and phase == 'report':
+                    raise OSError('controlled report rewrite failure')
+                return original_report(*args)
+            previous_handler = signal.getsignal(signal.SIGTERM)
+            try:
+                with patch('sys.argv', ['monitor', '--output', str(output), '--seconds', '1']), \
+                     patch.object(m.platform, 'system', return_value='Linux'), \
+                     patch.object(m, 'time', FakeClock()), patch.object(m, 'ResourceSampler', IdleSampler), \
+                     patch.object(m, 'collect_profile', return_value={}), \
+                     patch.object(m, '_source_record', return_value={}), \
+                     patch.object(m, 'scan_processes', return_value={'processes': [], 'scan': {}}), \
+                     patch.object(m, 'summarize_resources', return_value=resource_summary()), \
+                     patch.object(m, '_json', side_effect=write), \
+                     patch.object(m, 'write_monitor_report', side_effect=report):
+                    with self.assertRaises(SystemExit) as caught:
+                        m.main()
+            finally:
+                signal.signal(signal.SIGTERM, previous_handler)
+            self.assertEqual(caught.exception.code, 130)
+            self.assertIsInstance(caught.exception.__context__, KeyboardInterrupt)
+            self.assertTrue(fired)
+            self.assertTrue(IdleSampler.instances[-1].closed)
+            status = json.loads((output / 'monitor-status.json').read_text())
+            self.assertEqual(status['status'], 'interrupted')
+            self.assertEqual(status['error_type'], 'KeyboardInterrupt')
+            self.assertEqual(status['error'], str(caught.exception.__context__))
+            self.assertTrue(any(row['error_type'] == 'OSError' and row['error'] ==
+                                'controlled ' + phase + ' rewrite failure' for row in status['cleanup_errors']))
+            self.assertEqual(raw_before, {name: (output / name).read_bytes() for name in raw_before})
+
+    def test_final_status_sigterm_summary_failure_still_saves_interrupted(self):
+        self.final_status_signal_with_rewrite_error('summary')
+
+    def test_final_status_sigterm_report_failure_still_saves_interrupted(self):
+        self.final_status_signal_with_rewrite_error('report')
+
 
 if __name__ == '__main__':
     unittest.main()

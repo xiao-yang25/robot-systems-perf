@@ -105,6 +105,8 @@ robot-perf-monitor --profile light --require-jetson --include-name '^component_c
 
 0.6.1 提前拒绝 metadata 读取前的参数冲突，纯 PID 清单只读取 PID 并集内的进程详情，并补齐异常窗口结束记录、保留原始错误。现场开销收益和业务扰动需按指南的有限对照分别验证。
 
+0.6.2 修补最终状态落盘中断叠加摘要/报告写入失败，独立保存 interrupted 状态和错误记录。0.6.1 的纯PID四轮对照已有现场反馈，业务扰动仍未评估；本增量只需两项受控故障复核，见 [最终状态复核](docs/BUSINESS_MAPPING.md#062-最终状态有限复核)。
+
 ## 结果与检查
 
 阅读套件目录下的 `SUITE_REPORT.md`，再查看每个 case 的 `REPORT.md` 和 `summary.json`。`suite-status.json` / `run-status.json` 的 complete 只表示采集成功；业务达标、输入质量和采集开销分别判断。失败退出非零并保留证据；结果不进入 Git。

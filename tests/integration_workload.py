@@ -105,7 +105,7 @@ def verify(wheel, output):
             wait_for(lambda: owner.handle(process).alive() and
                      owner.backend.bound_info(owner.handle(process).directory).comm == names[kind])
             return process
-        def monitor(folder, seconds, *, fail=False, workload_path=None, cleanup_fault=False):
+        def monitor(folder, seconds, *, fail=False, workload_path=None, cleanup_fault=False, final_fault=None):
             args = ['--workload', str((workload_path or config).resolve()), '--profile', 'light', '--seconds', str(seconds),
                     '--interval', '.1', '--process-interval', '.1', '--system-interval', '.1',
                     '--discovery-interval', '.2', '--output', str(folder.resolve())]
@@ -131,6 +131,31 @@ sys.argv=['robot-perf-monitor',*sys.argv[1:]]
 monitor.main()
 """
                 command = [str(prefix / 'bin/python'), '-c', code, *args]
+            elif final_fault:
+                code = """import hashlib,json,os,signal,sys
+from perfkit import monitor
+phase=sys.argv[1]
+original_json,original_report=monitor._json,monitor.write_monitor_report
+sent=[]
+def write(path,value):
+ if sent and phase=='summary' and path.name=='monitor-summary.json': raise OSError('controlled summary rewrite failure')
+ result=original_json(path,value)
+ if path.name=='monitor-status.json' and value['status']=='complete' and not sent:
+  sent.append(True)
+  marker={'status_on_disk':json.loads(path.read_text())['status'],'phase':phase,'signal':int(signal.SIGTERM),
+          'raw_sha256':{name:hashlib.sha256((path.parent/name).read_bytes()).hexdigest()
+                        for name in ('resources.jsonl','discovery.jsonl','business-relations.jsonl')}}
+  (path.parent/'final-signal-marker.json').write_text(json.dumps(marker)+'\\n')
+  os.kill(os.getpid(),signal.SIGTERM)
+ return result
+def report(*args):
+ if sent and phase=='report': raise OSError('controlled report rewrite failure')
+ return original_report(*args)
+monitor._json,monitor.write_monitor_report=write,report
+sys.argv=['robot-perf-monitor',*sys.argv[2:]]
+monitor.main()
+"""
+                command = [str(prefix / 'bin/python'), '-c', code, final_fault, *args]
             log = (output / (folder.name + '.log')).open('x')
             logs.append(log)
             return launch(owner, command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -225,6 +250,24 @@ monitor.main()
             assert cancel_terminal['outcome'] == 'interrupted'
             assert cancel_terminal['monotonic_ns'] == cancel_status['window_end_ns']
             assert not Path('/proc', str(cancel_fault.pid)).exists()
+            final_fault_folders = []
+            for phase in ('summary', 'report'):
+                final_folder = output / ('final-status-' + phase + '-fault')
+                final_fault_folders.append(final_folder)
+                final_monitor = monitor(final_folder, 1, workload_path=pid_config, final_fault=phase)
+                assert final_monitor.wait(timeout=10) == 130
+                final_status = json.loads((final_folder / 'monitor-status.json').read_text())
+                assert final_status['status'] == 'interrupted' and final_status['error_type'] == 'KeyboardInterrupt'
+                assert final_status['window_start_ns'] is not None and final_status['window_end_ns'] is not None
+                assert any(row['error_type'] == 'OSError' and row['error'] ==
+                           'controlled ' + phase + ' rewrite failure' for row in final_status['cleanup_errors'])
+                marker = json.loads((final_folder / 'final-signal-marker.json').read_text())
+                assert marker['status_on_disk'] == 'complete' and marker['signal'] == int(signal.SIGTERM)
+                assert marker['raw_sha256'] == {name: hashlib.sha256((final_folder / name).read_bytes()).hexdigest()
+                                               for name in marker['raw_sha256']}
+                assert rows(final_folder), 'late cancellation must preserve prior observations'
+                assert all(proc.poll() is None for proc in (control, outside, replacement))
+                assert not Path('/proc', str(final_monitor.pid)).exists()
             failed = output / 'failed'
             faulted = monitor(failed, 5, fail=True)
             assert faulted.wait(timeout=10) != 0
@@ -237,7 +280,7 @@ monitor.main()
             assert terminal['monotonic_ns'] == failed_status['window_end_ns']
             assert rows(failed), 'failure must preserve prior relation evidence'
             assert all(proc.poll() is None for proc in (control, outside, replacement)), 'monitor affected external fixtures'
-            for folder in (capture, pid_capture, interrupted, interrupted_fault, failed):
+            for folder in (capture, pid_capture, interrupted, interrupted_fault, failed, *final_fault_folders):
                 for path in folder.iterdir():
                     if path.is_file(): assert SECRET not in path.read_text(), path.name
             (output / 'verification.json').write_text(json.dumps({
@@ -250,6 +293,8 @@ monitor.main()
                 'sigterm_exitcode': 130, 'failure_retains_evidence': True,
                 'failure_window_closed': True,
                 'sigterm_with_summary_failure_keeps_130': True,
+                'final_status_sigterm_summary_failure_consistent': True,
+                'final_status_sigterm_report_failure_consistent': True,
                 'external_fixtures_alive': True, 'no_argument_collection': True,
                 'ros_nodes_are_declarations': True, 'no_target_device_claim': True}, indent=2) + '\n')
         finally:

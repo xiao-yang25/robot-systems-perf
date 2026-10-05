@@ -499,9 +499,14 @@ def run_monitor(config, output, proc_root=Path('/proc'), *, workload=None):
                 try:
                     with defer_interrupts():
                         if summary is not None:
-                            summary['status'] = 'interrupted'
-                            _json(output / 'monitor-summary.json', summary)
-                            write_monitor_report(output, summary)
+                            try:
+                                summary['status'] = 'interrupted'
+                                _json(output / 'monitor-summary.json', summary)
+                                write_monitor_report(output, summary)
+                            except BaseException as cleanup:
+                                _cleanup_error(status, 'interrupted_summary_or_report_write', cleanup)
+                        # Save authoritative state even if an optional artifact
+                        # could not be rewritten after the deferred signal.
                         _json(output / 'monitor-status.json', status)
                 except BaseException as cleanup:
                     _cleanup_error(status, 'interrupted_status_write', cleanup)
