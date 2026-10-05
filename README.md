@@ -83,6 +83,8 @@ robot-perf-intake --view native-host --require-jetson --machine-id robot-demo \
 
 安装后可在任意目录执行。机器代号与平台视图是操作者声明；工具文件存在不代表采样已验证。人工补充模板、五个输出文件与设备复核方法见 [机器接入指南](docs/MACHINE_INTAKE.md)。
 
+0.5.1 可用 `--skip-temperature` 显式跳过接入温度探测并记录 skipped；仅不要求 thermal 仍会读取温度。该选项与 `--require-capability thermal` 冲突时拒绝执行。
+
 之后在该环境激活的任意目录运行，无需配置文件：
 
 ```bash

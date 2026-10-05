@@ -2,7 +2,7 @@
 
 M1 为每次接入保存机器档案、接口能力、建议配置和执行状态。它只读取当前进程可见的接口、查找工具文件和计算本工具模块摘要，不启动外部命令、性能负载或业务采集，不改变设备设置。Python 运行只依赖标准库；不需要 ROS、C++ 构建或 root。
 
-已在原生 ARM64 Linux 容器验证安装、输出和失败路径；Orin/Thor 型号测试使用已知接口夹具。新的 M1 入口仍需设备上只读复核，这与历史性能套件的设备结果分别记录。M2 业务关系建档仍是后续工作。
+已在原生 ARM64 Linux 容器验证安装、输出和失败路径。用户反馈 0.5.0 的 Orin/Thor 现场接入复核通过，但跳过温度依赖外部测试屏蔽，不表示该版本 CLI 支持跳过。0.5.1 新增显式跳过选项，仍需一次针对性设备复核；M2 业务关系建档仍是后续工作。
 
 ## 安装与首次执行
 
@@ -16,6 +16,29 @@ robot-perf-intake --view native-host --require-jetson --machine-id robot-demo \
 `--machine-id` 是操作者选择的非敏感代号；在同一台设备的不同轮次重复使用它可关联档案。省略时每次生成新的匿名代号。`--view` 可选 `unknown`、`native-host`、`container`，是操作者声明，不是自动宿主认证。容器中的设备接口可能来自挂载或透传，不能凭此证明原生执行。
 
 `--require-jetson` 要求当前视图有 Jetson 识别证据；不要求具体 Orin/Thor 型号或保证 BSP 兼容。普通 Linux 可省略此项。源码目录内的等效入口为 `python3 -m perfkit.intake`，安装后同样可以用模块入口。
+
+### 无 pip 或离线设备
+
+若设备有 pip，准备机器生成 wheel、设备离线安装的方法见 [业务采集指南](BUSINESS_MONITOR.md#直接运行)。wheel 包含两个入口，不需要设备安装构建工具；先核对 Python 版本与文件摘要。
+
+若有 venv 和 ensurepip，但没有 pip，可在新建的隔离环境中离线引导。下列命令在目标设备执行，wheel 由准备机器提供，路径替换成现场路径：
+
+```bash
+python3 -m venv --without-pip "$HOME/.venvs/robot-systems-perf"
+"$HOME/.venvs/robot-systems-perf/bin/python" -m ensurepip --upgrade
+"$HOME/.venvs/robot-systems-perf/bin/python" -m pip install --no-index \
+  /path/to/robot_systems_perf-0.5.1-py3-none-any.whl
+```
+
+[Python ensurepip 官方说明](https://docs.python.org/3.10/library/ensurepip.html) 明确该引导不访问网络；发行版可能未提供它，不因此自动安装系统包。若 venv/ensurepip 均缺失，完整源码包可直接离线运行，在任意目录单次指定模块位置：
+
+```bash
+PYTHONPATH=/path/to/robot-systems-perf python3 -m perfkit.intake \
+  --view native-host --require-jetson --skip-temperature \
+  --output results/machine-intake-offline-001
+```
+
+这是源码模块入口，不产生 `robot-perf-intake` 安装命令；工具代码版本以模块摘要关联。若必须 wheel 安装，先按设备发行版准备匹配的 Python 打包组件，或使用已审阅的离线引导材料；不把开发集成使用的 pip zip 当设备已安装 pip 的证明。
 
 ## 人工补充字段
 
@@ -56,7 +79,14 @@ robot-perf-intake --require-jetson --require-capability thermal \
   --output results/machine-intake-required-001
 ```
 
-名称来自 `capabilities.json` 的 `interfaces` 键，可重复指定；“必需”仍只检查至少一个接口可读。若本轮跳过温度，不设置 thermal 要求。
+名称来自 `capabilities.json` 的 `interfaces` 键，可重复指定；“必需”仍只检查至少一个接口可读。不设置 thermal 要求仍会探测温度，要跳过必须显式指定：
+
+```bash
+robot-perf-intake --view native-host --require-jetson --skip-temperature \
+  --output results/machine-intake-no-temperature-001
+```
+
+此选项不枚举 thermal 目录、不访问温度接口；thermal 能力为 `status=skipped`，`available`/`present` 为 null，来源列表为空并带主动跳过原因。档案和状态保存 `skip_temperature=true`。同时设置 `--require-capability thermal` 会在读取与创建输出目录前拒绝，退出非零。默认继续探测温度，其他能力与建议采集配置不因此改变。
 
 成功退出 0；非法输入、已有目录或必需项缺失退出非零；处理中 SIGINT/SIGTERM 退出 130。已经建立状态后发生异常，保留失败/中断状态及已写文件；初始化或磁盘写入本身失败时可能只有部分证据，不能视为成功。Markdown 是生成时快照，最终以状态 JSON 为准。已有结果目录一律拒绝覆盖，每轮换新目录。
 

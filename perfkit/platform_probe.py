@@ -103,7 +103,7 @@ def _schedstat(value):
     return len(fields) >= 3 and all(field.isdigit() for field in fields[:3])
 
 
-def _collect_capabilities(probe, tools):
+def _collect_capabilities(probe, tools, *, skip_temperature=False):
     capabilities = {
         'proc_cpu': _capability(probe, ['/proc/stat'], lambda text: any(
             line.startswith('cpu ') and len(line.split()) >= 5 and
@@ -180,6 +180,10 @@ def _collect_capabilities(probe, tools):
     for kind, directory, filename in (
             ('hwmon_power', '/sys/class/hwmon', r'power\d+_(?:input|average)'),
             ('thermal', '/sys/class/thermal', r'temp')):
+        if kind == 'thermal' and skip_temperature:
+            capabilities[kind] = {'available': None, 'present': None, 'status': 'skipped',
+                'reason': 'skipped by request (--skip-temperature)', 'source': [], 'interfaces': []}
+            continue
         devices, discovery_reason = probe.children(directory)
         sources = []
         for device in devices:
@@ -203,7 +207,8 @@ def _collect_capabilities(probe, tools):
     return capabilities
 
 
-def collect_profile(fs_root=Path('/'), include_kernel_command_line=True, *, query_power_mode=True):
+def collect_profile(fs_root=Path('/'), include_kernel_command_line=True, *, query_power_mode=True,
+                    skip_temperature=False):
     probe = _Probe(fs_root)
     def read(path):
         return probe.read(path)[0]
@@ -247,7 +252,8 @@ def collect_profile(fs_root=Path('/'), include_kernel_command_line=True, *, quer
                 'available': False, 'value': None,
                 'reason': 'not queried: intake runs no external commands'},
             'checks': checks,
-            'capabilities': _collect_capabilities(probe, checks['tools']),
+            'probe_options': {'skip_temperature': skip_temperature},
+            'capabilities': _collect_capabilities(probe, checks['tools'], skip_temperature=skip_temperature),
             'manual_fields': ['module/carrier details', 'cooling and ambient conditions',
                               'business deadlines and data-age limits', 'production IRQ/affinity policy'],
             'limitations': ['No system settings were changed.',

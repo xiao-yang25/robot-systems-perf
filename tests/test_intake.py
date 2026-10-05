@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from perfkit import intake
 from perfkit.monitor import validate_config
+from perfkit.platform_probe import _Probe
 
 
 class IntakeTests(unittest.TestCase):
@@ -164,6 +165,44 @@ class IntakeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'linux'):
                 self.run_intake()
         self.assertEqual(self.read('intake-status.json')['status'], 'failed')
+
+    def test_skip_temperature_never_reads_or_discovers_thermal_interfaces(self):
+        self.put('/sys/class/thermal/thermal_zone0/temp', '42000')
+        self.put('/sys/class/hwmon/hwmon0/temp1_input', '43000')
+        read, children = _Probe.read, _Probe.children
+        def guarded_read(probe, source, *args):
+            if source.startswith('/sys/class/thermal') or Path(source).name.startswith('temp'):
+                raise AssertionError('temperature interface accessed')
+            return read(probe, source, *args)
+        def guarded_children(probe, source):
+            if source.startswith('/sys/class/thermal'):
+                raise AssertionError('thermal directory accessed')
+            return children(probe, source)
+        with patch.object(_Probe, 'read', guarded_read), patch.object(_Probe, 'children', guarded_children):
+            machine = self.run_intake(skip_temperature=True)
+        thermal = self.read('capabilities.json')['interfaces']['thermal']
+        self.assertEqual(thermal['status'], 'skipped')
+        self.assertIsNone(thermal['available'])
+        self.assertIsNone(thermal['present'])
+        self.assertEqual(thermal['source'], [])
+        self.assertEqual(thermal['interfaces'], [])
+        self.assertIn('skipped', thermal['reason'])
+        self.assertTrue(machine['observed_platform']['probe_options']['skip_temperature'])
+        self.assertTrue(self.read('intake-status.json')['probe_options']['skip_temperature'])
+        self.assertEqual(self.read('intake-status.json')['status'], 'complete')
+
+    def test_skipped_required_thermal_rejects_before_reads_or_creating_output(self):
+        with patch.object(intake, 'collect_profile', side_effect=AssertionError('unexpected probe')):
+            with self.assertRaisesRegex(ValueError, 'required.*thermal'):
+                self.run_intake(skip_temperature=True, required_capabilities=['thermal'])
+        self.assertFalse((self.root / 'output').exists())
+
+    def test_default_temperature_probe_and_unrelated_requirements_remain_available(self):
+        self.put('/sys/class/thermal/thermal_zone0/temp', '42000')
+        self.run_intake('default', required_capabilities=['thermal'])
+        self.assertTrue(self.read('capabilities.json', 'default')['interfaces']['thermal']['available'])
+        self.run_intake('skip', skip_temperature=True, required_capabilities=['proc_memory'])
+        self.assertTrue(self.read('capabilities.json', 'skip')['interfaces']['proc_memory']['available'])
 
 
 if __name__ == '__main__':

@@ -132,7 +132,8 @@ def write_report(output, machine, capabilities, status):
 
 
 def run_intake(output, *, machine_id=None, view='unknown', metadata=None,
-               require_jetson=False, required_capabilities=(), fs_root=Path('/')):
+               require_jetson=False, required_capabilities=(), fs_root=Path('/'),
+               skip_temperature=False):
     if view not in VIEWS:
         raise ValueError('unsupported declared view')
     if machine_id is not None and (not isinstance(machine_id, str)
@@ -144,14 +145,20 @@ def run_intake(output, *, machine_id=None, view='unknown', metadata=None,
     if (not isinstance(required_capabilities, (list, tuple))
             or any(not isinstance(item, str) or not item for item in required_capabilities)):
         raise ValueError('required_capabilities must be a list of names')
+    if type(skip_temperature) is not bool:
+        raise ValueError('skip_temperature must be boolean')
+    if skip_temperature and 'thermal' in required_capabilities:
+        raise ValueError('required capability thermal conflicts with --skip-temperature')
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     begin = time.monotonic_ns()
     status = {'format_version': 1, 'status': 'running', 'error': None, 'completed_files': [],
-              'requirements': [], 'started_ns': begin, 'finished_ns': None}
+              'requirements': [], 'started_ns': begin, 'finished_ns': None,
+              'probe_options': {'skip_temperature': skip_temperature}}
     _write(output / 'intake-status.json', status)
     try:
-        host = collect_profile(fs_root, include_kernel_command_line=False, query_power_mode=False)
+        host = collect_profile(fs_root, include_kernel_command_line=False, query_power_mode=False,
+                               skip_temperature=skip_temperature)
         unknown = set(required_capabilities) - host['capabilities'].keys()
         if unknown:
             raise ValueError('unknown required capabilities: ' + ', '.join(sorted(unknown)))
@@ -229,6 +236,7 @@ def main():
     parser.add_argument('--metadata', type=Path, help='manual declarations JSON; never treated as observed runtime')
     parser.add_argument('--require-jetson', action='store_true')
     parser.add_argument('--require-capability', action='append', default=[])
+    parser.add_argument('--skip-temperature', action='store_true', help='do not discover or read thermal temperature interfaces')
     args = parser.parse_args()
     def terminate(signum, frame):
         raise KeyboardInterrupt('intake interrupted by SIGTERM')
@@ -236,7 +244,8 @@ def main():
     try:
         manual = json.loads(args.metadata.read_text(encoding='utf-8')) if args.metadata else None
         run_intake(args.output, machine_id=args.machine_id, view=args.view, metadata=manual,
-                   require_jetson=args.require_jetson, required_capabilities=args.require_capability)
+                   require_jetson=args.require_jetson, required_capabilities=args.require_capability,
+                   skip_temperature=args.skip_temperature)
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError, RuntimeError) as error:
