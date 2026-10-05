@@ -18,6 +18,16 @@ def histogram(bins=100000, overflow=0):
             % (overflow, ''.join(' %d' % i for i in range(min(overflow, bins))) + (' # %d others' % (overflow - bins) if overflow > bins else '')))
 
 
+def overflow_tail_histogram(start=1, total=1, bins=100000, others=1):
+    """Known quiet output: retained overflows followed by omitted events."""
+    return ('# Histogram\n'
+            + ''.join('%06d %06d\n' % (i, total if i == 0 else 0) for i in range(bins))
+            + '# Total: %d\n# Min Latencies: 0\n# Avg Latencies: %d\n# Max Latencies: %d\n'
+            % (total, bins * (bins + others) // (total + bins + others), bins)
+            + '# Histogram Overflows: %d\n# Histogram Overflow at cycle number:\n# Thread 0:%s # %d others\n'
+            % (bins + others, ''.join(' %d' % i for i in range(start, start + bins)), others))
+
+
 class WakeupComparisonTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -170,6 +180,21 @@ class WakeupComparisonTests(unittest.TestCase):
         self.assertEqual((result['samples'], result['in_range_samples'], result['overflow_samples']), (8, 6, 2))
         path.write_text(histogram(3, overflow=5))
         self.assertEqual(wakeup.validate_cyclictest_log(path, bins=3)['samples'], 11)
+
+    def test_overflow_tail_requires_room_after_last_retained_cycle(self):
+        path = self.root / 'tail.log'
+        # Every listed cycle is individually legal; the omitted event is not.
+        for bins, others in ((100000, 1), (3, 2)):
+            with self.subTest(bins=bins, others=others):
+                path.write_text(overflow_tail_histogram(start=2, bins=bins, others=others))
+                with self.assertRaisesRegex(RuntimeError, 'overflow cycle indices'):
+                    wakeup.validate_cyclictest_log(path, bins=bins)
+                # Adjacent legal edge: exactly enough later cycles for others.
+                for start, total in ((1, 1), (2, 2)):
+                    path.write_text(overflow_tail_histogram(start=start, total=total, bins=bins, others=others))
+                    evidence = wakeup.validate_cyclictest_log(path, bins=bins)
+                    self.assertEqual(evidence['samples'], total + bins + others)
+                    self.assertEqual(evidence['overflow_samples'], bins + others)
 
     def test_unqualified_cyclictest_outputs_are_rejected(self):
         valid = histogram(3)

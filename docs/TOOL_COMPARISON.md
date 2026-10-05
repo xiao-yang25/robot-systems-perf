@@ -57,7 +57,7 @@ python3 scripts/compare_tools.py --mode wakeup --cpu "$WAKEUP_CPU" --output resu
 
 比较 S01 的 `start_ns - scheduled_ns` 与 cyclictest 的唤醒延迟。S01 为零工作量、无预热、固定样本数；cyclictest 按持续时间结束，数量可能不同。原先 50 us 工作量的 S01 响应时间不可混入对照。
 
-S01 输出纳秒分布；cyclictest 先验证采样资格，再写入成功记录。当前支持 rt-tests 2.2/2.5 形态的单线程完整稠密直方图：100000 个连续桶、正数 Total、完整统计与 overflow 尾部；桶计数之和必须等于 Total，overflow 尾部列出的事件数加 `N others` 必须等于 Histogram Overflows。支持格式的 cycle 编号从 0 开始，必须小于总样本数且严格递增；最多保留 histogram_bins 个编号，超出部分用 `N others` 汇总，提前省略编号也失败。总样本数为 Total 加 Histogram Overflows；quiet + histogram 模式通常不输出线程 C 计数，若存在则必须与总样本数一致。空输出、错误/帮助、零样本、截断、计数不一致与未知/稀疏格式均失败并停止后续轮次。格式支持不代表该工具版本支持全部命令选项。
+S01 输出纳秒分布；cyclictest 先验证采样资格，再写入成功记录。当前支持 rt-tests 2.2/2.5 形态的单线程完整稠密直方图：100000 个连续桶、正数 Total、完整统计与 overflow 尾部；桶计数之和必须等于 Total，overflow 尾部列出的事件数加 `N others` 必须等于 Histogram Overflows。支持格式的 cycle 编号从 0 开始，必须小于总样本数且严格递增；最多保留 histogram_bins 个编号，超出部分用 `N others` 汇总，提前省略编号也失败。省略事件发生在最后保留事件之后，必须满足 `last_retained + others < samples`，否则即使各编号单独合法也拒绝。总样本数为 Total 加 Histogram Overflows；quiet + histogram 模式通常不输出线程 C 计数，若存在则必须与总样本数一致。空输出、错误/帮助、零样本、截断、计数不一致与未知/稀疏格式均失败并停止后续轮次。格式支持不代表该工具版本支持全部命令选项。
 
 `metrics.json` 的 `sampling_evidence` 记录桶内样本、overflow、总样本及计数来源。微秒直方图及原始日志保留；自动分位数仍为 null，采样资格通过不证明时延达标或两工具完全同义。手工核验后再比较，不能把微秒桶当作纳秒精度。
 
@@ -92,7 +92,7 @@ CTF、Babeltrace 解码、会话状态原文和 C01 CSV/报告保留。`trace_lo
 
 回传代码版本、环境摘要、`preflight.json`、`status.json`、`runs.json` 和问题窗口的原始日志/CSV/CTF。结果包含本机路径、PID、进程名称、映射库及可能的 topic 名称；保留在设备或内部渠道，脱敏后提供摘要，勿提交公开仓库。完成固定轮次即停止，只有工具故障或明确证据缺口才安排后续工作。
 
-本次修复只需在设备做以下短复核，不要求重跑整套性能测试：
+线程条件修复后的首次设备资格验证可用以下短测，不要求重跑整套性能测试：
 
 ```bash
 WAKEUP_CPU=1  # 改为本机当前允许且适合测试的 CPU
@@ -102,6 +102,13 @@ python3 scripts/compare_tools.py --mode wakeup --cpu "$WAKEUP_CPU" --seconds 5 -
 
 预检查失败时先处理已记录的工具兼容问题；第二条仅在预检查通过后执行。有效运行应有正样本 `sampling_evidence`，且两个工具的 `thread_conditions.validated=true`、observations≥2、测量线程实际条件与请求一致；无效运行应为 `failed`、退出非零，不生成 cyclictest 的成功 `comparison.json`。保留失败目录，复跑用新目录。三台各做一次短复核即可；修复前后的线程检查及解析故障回归通过后结束本轮资格修复，不重跑资源、219 轮套件或业务全量采集。需要恢复公平唤醒性能结论时，仅在上述条件通过后重测该项有限轮次。
 
-此前 b6c3654 的 ARM64 容器记录将 rt-tests 2.2 的错误/帮助输出误计为 cyclictest 执行完成，因此撤回该项短实跑通过的结论，旧状态不能证明实际采样。资源与 ROS trace 记录不因此补写或改动。此次验证使用原生 ARM64 Docker、Ubuntu 22.04；真实设备仍需上述短复核。容器内权限不足的采样与缺少选项的工具应明确失败，不能作为设备性能证据。
+此前 b6c3654 的 ARM64 容器记录将 rt-tests 2.2 的错误/帮助输出误计为 cyclictest 执行完成，因此撤回该项短实跑通过的结论，旧状态不能证明实际采样。资源与 ROS trace 记录不因此补写或改动。该次验证使用原生 ARM64 Docker、Ubuntu 22.04；首次设备使用仍需上述资格验证。容器内权限不足的采样与缺少选项的工具应明确失败，不能作为设备性能证据。
 
-本次原生 ARM64 Docker / Ubuntu 22.04 验证：242 项单元/入口回归通过，包含选项前缀、重复/乱序/越界 overflow、未绑定 worker、错误策略、缺少 worker 证据以及检查失败后的自有进程回收。官方 rt-tests 2.5 的 3 秒单 CPU 短实跑，S01 与 cyclictest 各有 10 次有效线程条件观察；实际测量线程均为请求 CPU、policy=0、实时优先级=0、nice=0。cyclictest 获得 2992 样本、0 overflow，自动分位数仍为 null。临时容器提供 `SYS_NICE` 权限，仅验证执行与条件证据，不代表 Jetson 性能。
+线程条件修复的原生 ARM64 Docker / Ubuntu 22.04 验证：242 项单元/入口回归通过，包含选项前缀、重复/乱序/越界 overflow、未绑定 worker、错误策略、缺少 worker 证据以及检查失败后的自有进程回收。官方 rt-tests 2.5 的 3 秒单 CPU 短实跑，S01 与 cyclictest 各有 10 次有效线程条件观察；实际测量线程均为请求 CPU、policy=0、实时优先级=0、nice=0。cyclictest 获得 2992 样本、0 overflow，自动分位数仍为 null。临时容器提供 `SYS_NICE` 权限，仅验证执行与条件证据，不代表 Jetson 性能。
+
+
+最新 overflow 尾部修复只调整日志资格校验。已完成设备线程条件验证且保留有效原始日志时，无需因此重复三台设备的短测或全套性能测试；可离线重放这些日志。缺少 `--default-system` 的版本仍应拒绝，兼容版本的正向验证另行安排，不静默删除电源管理参数。
+
+联合边界回归采用独立已知数据：100000 桶、Total=1、Overflows=100001，保留 cycle=2..100001 且 `# 1 others` 时，总样本数为 100002，最后保留编号后没有合法位置，应失败；改为 cycle=1..100000，或保持编号而将 Total 改为 2，则恰好存在一个后续位置，应通过。另有小桶、多省略事件边界。真实 Linux 主入口验证失败退出非零、保留原始日志、不生成成功指标且停止后续轮次；合法边界仍完成对照，自动分位数保持 null。
+
+本轮本地 ARM64 Docker / Ubuntu 22.04 回归与离线日志重放只证明校验和兼容性，不提供新的设备性能结论。重放三份此前本地官方 rt-tests 2.5 有效日志，样本数分别为 2992、3000、2996，overflow 均为 0；修复前后解析结果及原始文件哈希一致。未在本地取得设备原始日志，不能称已重放设备结果。

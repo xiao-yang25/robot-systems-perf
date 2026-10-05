@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 from scripts.comparison_common import ROOT
-from tests.test_tool_wakeup import histogram
+from tests.test_tool_wakeup import histogram, overflow_tail_histogram
 from tests.test_tool_comparison import BABELTRACE_HELP, CYCLICTEST_HELP
 
 HELP = CYCLICTEST_HELP
@@ -49,6 +49,8 @@ if '--help' in sys.argv:
  sys.exit(1 if case=='help-exit1' else 0)
 valid=%r
 overflow=%r
+tail_bad=%r
+tail_good=%r
 texts={'help-only':'cyclictest: unrecognized option --default-system\\n'+help_text,
  'empty':'','zero':valid.replace('000000 000001','000000 000000').replace('000001 000002','000001 000000').replace('000002 000003','000002 000000').replace('# Total: 6','# Total: 0').replace('C: 6','C: 0'),
  'truncated':valid.split('# Total:')[0], 'unknown':'unknown histogram format',
@@ -58,6 +60,7 @@ texts={'help-only':'cyclictest: unrecognized option --default-system\\n'+help_te
  'overflow-duplicate':overflow.replace('# Thread 0: 0 1','# Thread 0: 1 1'),
  'overflow-range':overflow.replace('# Thread 0: 0 1','# Thread 0: 999999 999999'),
  'overflow-order':overflow.replace('# Thread 0: 0 1','# Thread 0: 1 0'),
+ 'overflow-tail-invalid':tail_bad, 'overflow-tail-valid':tail_good,
  'quiet-histogram':valid.split('\\n',1)[1]}
 print(texts.get(case,valid),end='')
 if case not in ('help-only','empty','zero','truncated','unknown','missing-worker'):
@@ -66,7 +69,7 @@ if case not in ('help-only','empty','zero','truncated','unknown','missing-worker
   if case=='batch-worker': os.sched_setscheduler(0,os.SCHED_BATCH,os.sched_param(0))
   time.sleep(1.2)
  thread=threading.Thread(target=worker); thread.start(); thread.join()
-""" % (HELP, histogram(), histogram(overflow=2)))
+""" % (HELP, histogram(), histogram(overflow=2), overflow_tail_histogram(start=2), overflow_tail_histogram()))
         self.executable(self.tools / 'pidstat', """import os,sys,time
 case=os.environ['FIXTURE_TOOL_CASE']
 if case=='timeout': time.sleep(30)
@@ -136,6 +139,34 @@ print('lttng (LTTng Trace Control) 2.13.4' if '--version' in sys.argv else '<ses
                         evidence = row['metrics']['sampling_evidence']
                         self.assertEqual(evidence['samples'], 8 if case == 'overflow' else 6)
                         self.assertIsNone(row['metrics']['start_deviation_ns'])
+
+    def test_overflow_tail_failure_reaches_main_and_legal_edge_completes(self):
+        result, output, status = self.run_cli('wakeup', 'overflow-tail-invalid')
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(status['status'], 'failed')
+        self.assertIn('overflow cycle indices', result.stdout)
+        folder = output / 'wakeup-01-cyclictest'
+        self.assertEqual((folder / 'command.log').read_text(), overflow_tail_histogram(start=2))
+        execution = json.loads((folder / 'result.json').read_text())
+        self.assertEqual(execution['returncode'], 0)
+        self.assertFalse(Path('/proc', str(execution['pid'])).exists())
+        self.assertFalse((folder / 'comparison.json').exists())
+        self.assertFalse((folder / 'metrics.json').exists())
+        self.assertFalse((output / 'runs.json').exists())
+        self.assertFalse((output / 'wakeup-02-cyclictest').exists())
+        self.assertFalse((output / 'wakeup-02-s01').exists())
+        result, output, status = self.run_cli('wakeup', 'overflow-tail-valid')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(status['status'], 'execution_completed')
+        rows = json.loads((output / 'runs.json').read_text())
+        self.assertEqual(len(rows), 6)
+        for row in rows:
+            self.assertTrue(row['thread_conditions']['validated'])
+            if row['tool'] == 'cyclictest':
+                self.assertEqual(Path(row['run_dir'], 'command.log').read_text(), overflow_tail_histogram())
+                evidence = row['metrics']['sampling_evidence']
+                self.assertEqual((evidence['samples'], evidence['overflow_samples']), (100002, 100001))
+                self.assertIsNone(row['metrics']['start_deviation_ns'])
 
     def test_probe_exit127_timeout_and_empty_are_unavailable(self):
         for case in ('exit127', 'timeout', 'empty'):

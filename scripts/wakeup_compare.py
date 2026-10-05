@@ -91,8 +91,10 @@ def validate_cyclictest_log(path, bins=100000):
     samples = population + fields['Histogram Overflows']
     # 2.2/2.5 record zero-based cycles before cycles++, in encounter order,
     # retaining at most histogram-size entries and summarizing the rest.
+    # Omitted events occur after the last retained cycle and need later slots.
     if (len(overflow_cycles) != min(fields['Histogram Overflows'], bins)
             or others != max(0, fields['Histogram Overflows'] - bins)
+            or (overflow_cycles and overflow_cycles[-1] + others >= samples)
             or any(cycle >= samples for cycle in overflow_cycles)
             or any(a >= b for a, b in zip(overflow_cycles, overflow_cycles[1:]))):
         raise RuntimeError('cyclictest overflow cycle indices invalid or incomplete')
