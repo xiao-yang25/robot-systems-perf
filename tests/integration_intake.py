@@ -144,6 +144,19 @@ raise SystemExit(intake.main())
         conflict = command(['--output', 'conflict', '--skip-temperature', '--require-capability', 'thermal'],
                            guard_thermal=True)
         assert conflict.returncode != 0 and not (cwd / 'conflict').exists()
+        # A rejected argument combination must not block on FIFO metadata or
+        # replace the conflict with an unrelated metadata read error.
+        fifo = root / 'metadata.fifo'
+        os.mkfifo(fifo)
+        metadata_logs = []
+        for index, metadata_path in enumerate((fifo, root / 'metadata-missing.json', root)):
+            destination = 'metadata-conflict-' + str(index)
+            rejected = command(['--metadata', str(metadata_path), '--output', destination,
+                                '--skip-temperature', '--require-capability', 'thermal'])
+            assert rejected.returncode == 1 and 'conflicts' in rejected.stdout
+            assert not (cwd / destination).exists()
+            metadata_logs.append(rejected.stdout + rejected.stderr)
+        (output / 'metadata-precheck.log').write_text(''.join(metadata_logs))
         (output / 'controlled-runs.log').write_text(positive.stdout + positive.stderr + failed.stdout
             + failed.stderr + skipped.stdout + skipped.stderr + conflict.stdout + conflict.stderr)
         # Exercise actual installed main's SIGTERM handler after its status exists.
@@ -195,6 +208,7 @@ raise SystemExit(intake.main())
                     'jetson_requirement_uses_explicit_fixtures': True,
                     'skip_temperature_read_sentinel_passed': True,
                     'skipped_required_conflict_rejected': True,
+                    'metadata_conflict_precedes_fifo_missing_directory_reads': True,
                     'sigterm_status': cancelled['status'], 'sigterm_exitcode': 130,
                     'owned_child_reaped': True, 'no_jetson_performance_claim': True}
         (output / 'verification.json').write_text(json.dumps(evidence, indent=2) + '\n')

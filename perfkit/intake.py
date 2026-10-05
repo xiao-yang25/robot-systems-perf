@@ -131,9 +131,7 @@ def write_report(output, machine, capabilities, status):
         stream.write('\n'.join(lines) + '\n')
 
 
-def run_intake(output, *, machine_id=None, view='unknown', metadata=None,
-               require_jetson=False, required_capabilities=(), fs_root=Path('/'),
-               skip_temperature=False):
+def _validate_options(machine_id, view, require_jetson, required_capabilities, skip_temperature):
     if view not in VIEWS:
         raise ValueError('unsupported declared view')
     if machine_id is not None and (not isinstance(machine_id, str)
@@ -141,7 +139,6 @@ def run_intake(output, *, machine_id=None, view='unknown', metadata=None,
         raise ValueError('machine_id must be a 1..64 character anonymous identifier')
     if type(require_jetson) is not bool:
         raise ValueError('require_jetson must be boolean')
-    manual = validate_metadata(metadata if metadata is not None else {'format_version': 1})
     if (not isinstance(required_capabilities, (list, tuple))
             or any(not isinstance(item, str) or not item for item in required_capabilities)):
         raise ValueError('required_capabilities must be a list of names')
@@ -149,6 +146,13 @@ def run_intake(output, *, machine_id=None, view='unknown', metadata=None,
         raise ValueError('skip_temperature must be boolean')
     if skip_temperature and 'thermal' in required_capabilities:
         raise ValueError('required capability thermal conflicts with --skip-temperature')
+
+
+def run_intake(output, *, machine_id=None, view='unknown', metadata=None,
+               require_jetson=False, required_capabilities=(), fs_root=Path('/'),
+               skip_temperature=False):
+    _validate_options(machine_id, view, require_jetson, required_capabilities, skip_temperature)
+    manual = validate_metadata(metadata if metadata is not None else {'format_version': 1})
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     begin = time.monotonic_ns()
@@ -242,6 +246,8 @@ def main():
         raise KeyboardInterrupt('intake interrupted by SIGTERM')
     old = signal.signal(signal.SIGTERM, terminate)
     try:
+        _validate_options(args.machine_id, args.view, args.require_jetson,
+                          args.require_capability, args.skip_temperature)
         manual = json.loads(args.metadata.read_text(encoding='utf-8')) if args.metadata else None
         run_intake(args.output, machine_id=args.machine_id, view=args.view, metadata=manual,
                    require_jetson=args.require_jetson, required_capabilities=args.require_capability,

@@ -1,5 +1,6 @@
 """Installed M2a: shared process, restart, ambiguity, failure and cancellation."""
 import argparse
+from email.parser import Parser
 import hashlib
 import importlib.util
 import json
@@ -74,6 +75,10 @@ def verify(wheel, output):
             text=True, capture_output=True, timeout=30)
         (output / 'install.log').write_text(install.stdout + install.stderr)
         assert install.returncode == 0
+        with zipfile.ZipFile(wheel) as archive:
+            metadata_names = [name for name in archive.namelist() if name.endswith('.dist-info/METADATA')]
+            assert len(metadata_names) == 1
+            expected_version = Parser().parsestr(archive.read(metadata_names[0]).decode())['Version']
         env.pop('PYTHONPATH', None)
         null_workload, rejected = root / 'null.json', output / 'null-rejected'
         null_workload.write_text('null\n')
@@ -100,8 +105,8 @@ def verify(wheel, output):
             wait_for(lambda: owner.handle(process).alive() and
                      owner.backend.bound_info(owner.handle(process).directory).comm == names[kind])
             return process
-        def monitor(folder, seconds, *, fail=False):
-            args = ['--workload', str(config.resolve()), '--profile', 'light', '--seconds', str(seconds),
+        def monitor(folder, seconds, *, fail=False, workload_path=None, cleanup_fault=False):
+            args = ['--workload', str((workload_path or config).resolve()), '--profile', 'light', '--seconds', str(seconds),
                     '--interval', '.1', '--process-interval', '.1', '--system-interval', '.1',
                     '--discovery-interval', '.2', '--output', str(folder.resolve())]
             command = [str(prefix / 'bin/robot-perf-monitor'), *args]
@@ -113,6 +118,15 @@ def fault(self,*args):
  if self.scans: raise RuntimeError('controlled relation write failure')
  return original(self,*args)
 monitor.BusinessRelations.observe=fault
+sys.argv=['robot-perf-monitor',*sys.argv[1:]]
+monitor.main()
+"""
+                command = [str(prefix / 'bin/python'), '-c', code, *args]
+            elif cleanup_fault:
+                code = """import sys
+from perfkit import monitor
+def fault(*args): raise OSError('controlled interrupted summary failure')
+monitor.summarize_resources=fault
 sys.argv=['robot-perf-monitor',*sys.argv[1:]]
 monitor.main()
 """
@@ -164,7 +178,7 @@ monitor.main()
                        for row in business['functions'])
             assert 'cpu_percent_one_core' not in json.dumps(business['functions'])
             environment = json.loads((capture / 'environment.json').read_text())
-            assert environment['source']['package_version'] == '0.6.0'
+            assert environment['source']['package_version'] == expected_version
             with zipfile.ZipFile(wheel) as archive:
                 for name, digest in environment['source']['sha256'].items():
                     assert hashlib.sha256(archive.read(name)).hexdigest() == digest
@@ -174,6 +188,22 @@ monitor.main()
             assert rejected.returncode != 0
             assert b'FileExistsError' in rejected.stderr
             assert before == {path.name: path.read_bytes() for path in capture.iterdir()}
+            pid_workload = json.loads(json.dumps(workload))
+            for function in pid_workload['functions']:
+                function['process_selector'] = {'pids': [control.pid if function['id'] == 'control' else replacement.pid]}
+            pid_config, pid_capture = output / 'pid-workload.local.json', output / 'explicit-pids'
+            pid_config.write_text(json.dumps(pid_workload) + '\n')
+            pid_monitor = monitor(pid_capture, 2, workload_path=pid_config)
+            assert pid_monitor.wait(timeout=10) == 0
+            pid_summary = json.loads((pid_capture / 'monitor-summary.json').read_text())
+            assert json.loads((pid_capture / 'workload-profile.json').read_text())['discovery_mode'] == 'explicit_pids'
+            pid_scans = [json.loads(line) for line in (pid_capture / 'discovery.jsonl').read_text().splitlines()]
+            assert pid_scans and all(row['scan']['mode'] == 'explicit_pids' for row in pid_scans)
+            assert all(row['scan']['process_count'] == 2 for row in pid_scans)
+            assert all({item['pid'] for item in row['targets']} == {control.pid, replacement.pid} for row in pid_scans)
+            pid_functions = {row['function_id']: row for row in pid_summary['workload']['functions']}
+            assert pid_functions['detector']['resource_refs'] == pid_functions['tracker']['resource_refs']
+            assert len(pid_summary['workload']['unique_resource_refs']) == 2
             interrupted = output / 'interrupted'
             cancelled = monitor(interrupted, 30)
             wait_for(lambda: bool(latest(interrupted).get('detector', {}).get('candidates')))
@@ -183,22 +213,43 @@ monitor.main()
             assert json.loads((interrupted / 'monitor-summary.json').read_text())['status'] == 'interrupted'
             assert 'interrupted' in (interrupted / 'BUSINESS_MAP_REPORT.md').read_text()
             assert not Path('/proc', str(cancelled.pid)).exists()
+            interrupted_fault = output / 'interrupted-summary-fault'
+            cancel_fault = monitor(interrupted_fault, 30, cleanup_fault=True)
+            wait_for(lambda: bool(latest(interrupted_fault).get('detector', {}).get('candidates')))
+            owner.signal(cancel_fault, signal.SIGTERM)
+            assert cancel_fault.wait(timeout=10) == 130
+            cancel_status = json.loads((interrupted_fault / 'monitor-status.json').read_text())
+            assert cancel_status['status'] == 'interrupted' and cancel_status['error_type'] == 'KeyboardInterrupt'
+            assert any(row['error'] == 'controlled interrupted summary failure' for row in cancel_status['cleanup_errors'])
+            cancel_terminal = json.loads((interrupted_fault / 'business-relations.jsonl').read_text().splitlines()[-1])
+            assert cancel_terminal['outcome'] == 'interrupted'
+            assert cancel_terminal['monotonic_ns'] == cancel_status['window_end_ns']
+            assert not Path('/proc', str(cancel_fault.pid)).exists()
             failed = output / 'failed'
             faulted = monitor(failed, 5, fail=True)
             assert faulted.wait(timeout=10) != 0
-            assert json.loads((failed / 'monitor-status.json').read_text())['status'] == 'failed'
+            failed_status = json.loads((failed / 'monitor-status.json').read_text())
+            assert failed_status['status'] == 'failed'
+            assert failed_status['error'] == 'controlled relation write failure'
+            assert failed_status['window_start_ns'] is not None and failed_status['window_end_ns'] is not None
+            terminal = [json.loads(line) for line in (failed / 'business-relations.jsonl').read_text().splitlines()][-1]
+            assert terminal['event'] == 'observation_ended' and terminal['outcome'] == 'failed'
+            assert terminal['monotonic_ns'] == failed_status['window_end_ns']
             assert rows(failed), 'failure must preserve prior relation evidence'
             assert all(proc.poll() is None for proc in (control, outside, replacement)), 'monitor affected external fixtures'
-            for folder in (capture, interrupted, failed):
+            for folder in (capture, pid_capture, interrupted, interrupted_fault, failed):
                 for path in folder.iterdir():
                     if path.is_file(): assert SECRET not in path.read_text(), path.name
             (output / 'verification.json').write_text(json.dumps({
-                'installed_version': '0.6.0', 'installed_module_hashes_match_wheel': True,
+                'installed_version': expected_version, 'installed_module_hashes_match_wheel': True,
                 'wheel_sha256': hashlib.sha256(wheel.read_bytes()).hexdigest(),
                 'shared_process_refs': True, 'ambiguity_and_restart': True,
                 'unrelated_process_not_collected': True, 'no_overwrite': True,
                 'null_workload_rejected_before_output': True,
+                'pure_pid_mode_and_shared_refs': True,
                 'sigterm_exitcode': 130, 'failure_retains_evidence': True,
+                'failure_window_closed': True,
+                'sigterm_with_summary_failure_keeps_130': True,
                 'external_fixtures_alive': True, 'no_argument_collection': True,
                 'ros_nodes_are_declarations': True, 'no_target_device_claim': True}, indent=2) + '\n')
         finally:

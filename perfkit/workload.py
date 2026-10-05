@@ -84,8 +84,12 @@ class WorkloadSelector(DiscoverySelector):
     def __init__(self, config, workload, clock_ticks):
         if config['include_names'] or config['pids'] or config['active_cpu_percent'] != 1:
             raise ValueError('workload mode uses function selectors; global names/PIDs/activity overrides are unsupported')
-        scope = dict(config, include_names=['.*'], pids=[], active_cpu_percent=0)
+        explicit_only = all(not role['process_selector']['include_names'] for role in workload['functions'])
+        requested = sorted({pid for role in workload['functions'] for pid in role['process_selector']['pids']})
+        scope = dict(config, include_names=[] if explicit_only else ['.*'],
+                     pids=requested if explicit_only else [], active_cpu_percent=0)
         super().__init__(scope, clock_ticks)
+        self.discovery_mode = 'explicit_pids' if explicit_only else 'scoped_discovery'
         self.workload = workload
         self.roles = {role['id']: DiscoverySelector(dict(role['process_selector'],
                       active_cpu_percent=0, max_targets=256), clock_ticks) for role in workload['functions']}

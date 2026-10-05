@@ -25,7 +25,7 @@ Ubuntu若未提供 venv/pip，先准备相应 Python 工具。安装构建使用
 
 ```bash
 python3 -m pip wheel --no-deps . --wheel-dir dist
-python3 -m pip install --no-index /path/to/robot_systems_perf-0.6.0-py3-none-any.whl
+python3 -m pip install --no-index /path/to/robot_systems_perf-0.6.1-py3-none-any.whl
 ```
 
 上述是准备机器与设备分别执行的命令，wheel文件路径及版本需替换。wheel提供机器接入、业务资源采集的命令与Python模块；C01/S01需要C++构建，仍使用源码仓库的 Docker/native 入口。无pip/ensurepip的设备处理方式见 [机器接入指南](MACHINE_INTAKE.md#无-pip-或离线设备)。

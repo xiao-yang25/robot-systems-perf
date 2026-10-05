@@ -2,7 +2,7 @@
 
 M1 为每次接入保存机器档案、接口能力、建议配置和执行状态。它只读取当前进程可见的接口、查找工具文件和计算本工具模块摘要，不启动外部命令、性能负载或业务采集，不改变设备设置。Python 运行只依赖标准库；不需要 ROS、C++ 构建或 root。
 
-已在原生 ARM64 Linux 容器验证安装、输出和失败路径。用户反馈 0.5.0 的 Orin/Thor 现场接入复核通过，但跳过温度依赖外部测试屏蔽，不表示该版本 CLI 支持跳过。0.5.1 新增显式跳过选项，仍需一次针对性设备复核；M2a业务清单与资源引用已接入，见 [业务功能关系指南](BUSINESS_MAPPING.md)，设备业务复核待执行。
+已在原生 ARM64 Linux 容器验证安装、输出和失败路径。用户反馈 0.6.0 的三台 Orin/Thor 机器信息回归和 M2a 安装集成通过；Orin 完成真实进程资源关联，节点语义仍未验证。0.6.1 的参数读取顺序修补需有限设备复核，见 [业务功能关系指南](BUSINESS_MAPPING.md)。现场结论来自用户摘要，本机未取得原始设备记录。
 
 ## 安装与首次执行
 
@@ -27,7 +27,7 @@ robot-perf-intake --view native-host --require-jetson --machine-id robot-demo \
 python3 -m venv --without-pip "$HOME/.venvs/robot-systems-perf"
 "$HOME/.venvs/robot-systems-perf/bin/python" -m ensurepip --upgrade
 "$HOME/.venvs/robot-systems-perf/bin/python" -m pip install --no-index \
-  /path/to/robot_systems_perf-0.6.0-py3-none-any.whl
+  /path/to/robot_systems_perf-0.6.1-py3-none-any.whl
 ```
 
 [Python ensurepip 官方说明](https://docs.python.org/3.10/library/ensurepip.html) 明确该引导不访问网络；发行版可能未提供它，不因此自动安装系统包。若 venv/ensurepip 均缺失，完整源码包可直接离线运行，在任意目录单次指定模块位置：
@@ -86,7 +86,7 @@ robot-perf-intake --view native-host --require-jetson --skip-temperature \
   --output results/machine-intake-no-temperature-001
 ```
 
-此选项不枚举 thermal 目录、不访问温度接口；thermal 能力为 `status=skipped`，`available`/`present` 为 null，来源列表为空并带主动跳过原因。档案和状态保存 `skip_temperature=true`。同时设置 `--require-capability thermal` 会在读取与创建输出目录前拒绝，退出非零。默认继续探测温度，其他能力与建议采集配置不因此改变。
+此选项不枚举 thermal 目录、不访问温度接口；thermal 能力为 `status=skipped`，`available`/`present` 为 null，来源列表为空并带主动跳过原因。档案和状态保存 `skip_temperature=true`。同时设置 `--require-capability thermal` 时退出非零。0.6.1 将共享参数预检查提前到 CLI 的 metadata 读取之前；API 也保留校验，冲突请求不访问 metadata 或平台接口、不创建结果目录。默认继续探测温度，其他能力与建议采集配置不因此改变。
 
 成功退出 0；非法输入、已有目录或必需项缺失退出非零；处理中 SIGINT/SIGTERM 退出 130。已经建立状态后发生异常，保留失败/中断状态及已写文件；初始化或磁盘写入本身失败时可能只有部分证据，不能视为成功。Markdown 是生成时快照，最终以状态 JSON 为准。已有结果目录一律拒绝覆盖，每轮换新目录。
 

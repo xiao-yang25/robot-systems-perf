@@ -1,7 +1,7 @@
 """Discover and observe existing Linux processes without owning their lifecycle."""
 import argparse
 import copy
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import hashlib
 from importlib import metadata
 import json
@@ -166,6 +166,28 @@ def write_monitor_report(output, summary):
         write_business_report(output, summary)
 
 
+def _cleanup_error(status, stage, error):
+    status.setdefault('cleanup_errors', []).append(
+        {'stage': stage, 'error_type': type(error).__name__, 'error': str(error)})
+
+
+@contextmanager
+def _sampler_window(sampler, status):
+    primary = None
+    try:
+        with sampler:
+            try:
+                yield
+            except BaseException as exc:
+                primary = exc
+                raise
+    except BaseException as exc:
+        if primary is not None and exc is not primary:
+            _cleanup_error(status, 'resource_sampler_close', exc)
+            raise primary from exc
+        raise
+
+
 def run_monitor(config, output, proc_root=Path('/proc'), *, workload=None):
     config = validate_config(config)
     if workload is not None:
@@ -179,6 +201,7 @@ def run_monitor(config, output, proc_root=Path('/proc'), *, workload=None):
     sampler = None
     start = end = None
     interrupted = None
+    observation_error = primary_error = None
     peak_selected = omitted_scans = skipped_process_reads = 0
     discovery_duration_sum = discovery_duration_max = discovery_overruns = 0
     discovery_cpu_sum = discovery_cpu_max = 0
@@ -207,6 +230,7 @@ def run_monitor(config, output, proc_root=Path('/proc'), *, workload=None):
                 'workload_sha256': hashlib.sha256(json.dumps(workload, sort_keys=True,
                     ensure_ascii=False, allow_nan=False).encode()).hexdigest(),
                 'pid_namespace': namespace, 'monitor_scope': config,
+                'discovery_mode': selector.discovery_mode,
                 'selection_mode': 'function_selectors_only; global hard filters intersect each function',
                 'limitations': ['Node/domain/version labels are operator declarations, not ROS runtime verification.',
                                 'Relations and resource registration IDs are local to this monitor run.']})
@@ -217,115 +241,140 @@ def run_monitor(config, output, proc_root=Path('/proc'), *, workload=None):
         sampler = ResourceSampler(output / 'resources.jsonl', config['resource_sampling_seconds'],
                                   **sampler_kwargs)
         sampler.set_window('business-monitor', None, 'observing')
-        with ExitStack() as files:
-            stream = files.enter_context((output / 'discovery.jsonl').open('x'))
-            relation_stream = files.enter_context((output / 'business-relations.jsonl').open('x')) if relations else None
-            try:
-                with sampler:
-                    start = time.monotonic_ns()
-                    planned_end = start + round(config['duration_seconds'] * 1e9)
-                    discovery_interval_ns = round(config['discovery_interval_seconds'] * 1e9)
-                    next_scan_ns = start
-                    while time.monotonic_ns() < planned_end:
-                        if sampler.error:
-                            raise RuntimeError('resource sampling failed: ' + sampler.error)
-                        scan_start = time.monotonic_ns()
-                        if scan_start >= planned_end:
-                            break
-                        if scan_start < next_scan_ns:
-                            time.sleep((min(next_scan_ns, planned_end) - scan_start) / 1e9)
-                            continue
-                        if previous_scan_start is not None:
-                            gap = scan_start - previous_scan_start
-                            discovery_gap_sum += gap
-                            discovery_gap_count += 1
-                            discovery_gap_max = max(discovery_gap_max, gap)
-                            discovery_gap_min = gap if discovery_gap_min is None else min(discovery_gap_min, gap)
-                        previous_scan_start = scan_start
-                        scan_cpu_start = time.thread_time_ns()
-                        observer_children = getattr(sampler, 'owned_process_ids', lambda: ())()
-                        inventory = scan_processes(proc_root, exclude_pids=(os.getpid(),) + observer_children,
-                                                   _scope=selector)
-                        now = time.monotonic_ns()
-                        read_cpu_end = time.thread_time_ns()
-                        decision = selector.update(inventory['processes'], now)
-                        targets = {item['pid']: item for item in decision['targets']}
-                        changes = []
-                        for pid, old in list(selected.items()):
-                            new = targets.get(pid)
-                            if new is None or new['starttime_ticks'] != old['starttime_ticks']:
-                                sampler.unregister(pid)
-                                selected.pop(pid)
-                                changes.append({'event': 'unregistered', 'pid': pid,
-                                                'starttime_ticks': old['starttime_ticks']})
-                        for pid, item in targets.items():
-                            if pid not in selected:
-                                registered = sampler.register(pid, 'business-candidate',
-                                                      expected_starttime_ticks=item['starttime_ticks'])
-                                changes.append({'event': 'registered' if registered else 'registration_identity_race',
-                                                'pid': pid, 'starttime_ticks': item['starttime_ticks']})
-                                if registered:
-                                    selected[pid] = item
-                                    status['registrations'] += 1
-                        status['scans'] += 1
-                        peak_selected = max(peak_selected, len(selected))
-                        omitted_scans += decision['selection']['omitted_count'] > 0
-                        skipped_process_reads += inventory['scan'].get('skipped_count', 0)
-                        if relations:
-                            registrations = {pid: sampler.registered_identity(pid) for pid in selected}
+        try:
+            with ExitStack() as files:
+                stream = files.enter_context((output / 'discovery.jsonl').open('x'))
+                relation_stream = files.enter_context((output / 'business-relations.jsonl').open('x')) if relations else None
+                try:
+                    with _sampler_window(sampler, status):
+                        start = time.monotonic_ns()
+                        planned_end = start + round(config['duration_seconds'] * 1e9)
+                        discovery_interval_ns = round(config['discovery_interval_seconds'] * 1e9)
+                        next_scan_ns = start
+                        while time.monotonic_ns() < planned_end:
+                            if sampler.error:
+                                raise RuntimeError('resource sampling failed: ' + sampler.error)
+                            scan_start = time.monotonic_ns()
+                            if scan_start >= planned_end:
+                                break
+                            if scan_start < next_scan_ns:
+                                time.sleep((min(next_scan_ns, planned_end) - scan_start) / 1e9)
+                                continue
+                            if previous_scan_start is not None:
+                                gap = scan_start - previous_scan_start
+                                discovery_gap_sum += gap
+                                discovery_gap_count += 1
+                                discovery_gap_max = max(discovery_gap_max, gap)
+                                discovery_gap_min = gap if discovery_gap_min is None else min(discovery_gap_min, gap)
+                            previous_scan_start = scan_start
+                            scan_cpu_start = time.thread_time_ns()
+                            observer_children = getattr(sampler, 'owned_process_ids', lambda: ())()
+                            inventory = scan_processes(proc_root, exclude_pids=(os.getpid(),) + observer_children,
+                                                       _scope=selector)
+                            now = time.monotonic_ns()
+                            read_cpu_end = time.thread_time_ns()
+                            decision = selector.update(inventory['processes'], now)
+                            targets = {item['pid']: item for item in decision['targets']}
+                            changes = []
+                            for pid, old in list(selected.items()):
+                                new = targets.get(pid)
+                                if new is None or new['starttime_ticks'] != old['starttime_ticks']:
+                                    sampler.unregister(pid)
+                                    selected.pop(pid)
+                                    changes.append({'event': 'unregistered', 'pid': pid,
+                                                    'starttime_ticks': old['starttime_ticks']})
+                            for pid, item in targets.items():
+                                if pid not in selected:
+                                    registered = sampler.register(pid, 'business-candidate',
+                                                          expected_starttime_ticks=item['starttime_ticks'])
+                                    changes.append({'event': 'registered' if registered else 'registration_identity_race',
+                                                    'pid': pid, 'starttime_ticks': item['starttime_ticks']})
+                                    if registered:
+                                        selected[pid] = item
+                                        status['registrations'] += 1
+                            status['scans'] += 1
+                            peak_selected = max(peak_selected, len(selected))
+                            omitted_scans += decision['selection']['omitted_count'] > 0
+                            skipped_process_reads += inventory['scan'].get('skipped_count', 0)
+                            if relations:
+                                registrations = {pid: sampler.registered_identity(pid) for pid in selected}
+                                with defer_interrupts():
+                                    record = relations.observe(decision, registrations, inventory,
+                                                               scan_start, time.monotonic_ns())
+                                    relation_payload = json.dumps(record, ensure_ascii=False, allow_nan=False,
+                                                                  separators=(',', ':')) + '\n'
+                                    relation_stream.write(relation_payload)
+                                    relation_stream.flush()
+                            selection_end, selection_cpu_end = time.monotonic_ns(), time.thread_time_ns()
+                            payload = json.dumps({'monotonic_ns': now, 'scan_start_ns': scan_start,
+                                'scan': inventory['scan'], 'selection': decision['selection'],
+                                'targets': decision['targets'], 'registered_pids': sorted(selected),
+                                'changes': changes,
+                                'read_selection_cost': {'read_ns': now - scan_start,
+                                    'selection_registration_ns': selection_end - now,
+                                    'read_thread_cpu_ns': read_cpu_end - scan_cpu_start,
+                                    'selection_registration_thread_cpu_ns': selection_cpu_end - read_cpu_end}},
+                                ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n'
+                            encode_end, encode_cpu_end = time.monotonic_ns(), time.thread_time_ns()
+                            stream.write(payload)
+                            stream.flush()
+                            scan_finished = time.monotonic_ns()
+                            scan_cpu_finished = time.thread_time_ns()
+                            for name, wall, cpu in (
+                                    ('read', now - scan_start, read_cpu_end - scan_cpu_start),
+                                    ('selection_registration', selection_end - now, selection_cpu_end - read_cpu_end),
+                                    ('encode', encode_end - selection_end, encode_cpu_end - selection_cpu_end),
+                                    ('write_flush', scan_finished - encode_end, scan_cpu_finished - encode_cpu_end)):
+                                discovery_phases.add(name, wall)
+                                discovery_cpu_phases.add(name, cpu)
+                            cpu_duration = scan_cpu_finished - scan_cpu_start
+                            discovery_cpu_sum += cpu_duration
+                            discovery_cpu_max = max(discovery_cpu_max, cpu_duration)
+                            duration = scan_finished - scan_start
+                            discovery_duration_sum += duration
+                            discovery_duration_max = max(discovery_duration_max, duration)
+                            discovery_overruns += duration > discovery_interval_ns
+                            next_scan_ns += discovery_interval_ns
+                            if next_scan_ns <= scan_finished:
+                                missed = (scan_finished - next_scan_ns) // discovery_interval_ns + 1
+                                skipped_discovery_deadlines += missed
+                                next_scan_ns += missed * discovery_interval_ns
+                        end = time.monotonic_ns()
+                    if sampler.error:
+                        raise RuntimeError('resource sampling failed: ' + sampler.error)
+                except KeyboardInterrupt as exc:
+                    interrupted = exc
+                except BaseException as exc:
+                    observation_error = exc
+                finally:
+                    if end is None:
+                        end = time.monotonic_ns()
+                    if relations:
+                        try:
                             with defer_interrupts():
-                                record = relations.observe(decision, registrations, inventory,
-                                                           scan_start, time.monotonic_ns())
-                                relation_payload = json.dumps(record, ensure_ascii=False, allow_nan=False,
-                                                              separators=(',', ':')) + '\n'
-                                relation_stream.write(relation_payload)
+                                outcome = 'failed' if observation_error else 'interrupted' if interrupted else 'closed'
+                                reason = ('monitor failed: ' + type(observation_error).__name__ if observation_error else
+                                          'monitor interrupted: KeyboardInterrupt' if interrupted else
+                                          'monitor window closed; no continuing validity asserted')
+                                relation_stream.write(json.dumps({'schema_version': 1, 'event': 'observation_ended',
+                                    'monotonic_ns': end, 'outcome': outcome, 'reason': reason},
+                                    separators=(',', ':')) + '\n')
                                 relation_stream.flush()
-                        selection_end, selection_cpu_end = time.monotonic_ns(), time.thread_time_ns()
-                        payload = json.dumps({'monotonic_ns': now, 'scan_start_ns': scan_start,
-                            'scan': inventory['scan'], 'selection': decision['selection'],
-                            'targets': decision['targets'], 'registered_pids': sorted(selected),
-                            'changes': changes,
-                            'read_selection_cost': {'read_ns': now - scan_start,
-                                'selection_registration_ns': selection_end - now,
-                                'read_thread_cpu_ns': read_cpu_end - scan_cpu_start,
-                                'selection_registration_thread_cpu_ns': selection_cpu_end - read_cpu_end}},
-                            ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n'
-                        encode_end, encode_cpu_end = time.monotonic_ns(), time.thread_time_ns()
-                        stream.write(payload)
-                        stream.flush()
-                        scan_finished = time.monotonic_ns()
-                        scan_cpu_finished = time.thread_time_ns()
-                        for name, wall, cpu in (
-                                ('read', now - scan_start, read_cpu_end - scan_cpu_start),
-                                ('selection_registration', selection_end - now, selection_cpu_end - read_cpu_end),
-                                ('encode', encode_end - selection_end, encode_cpu_end - selection_cpu_end),
-                                ('write_flush', scan_finished - encode_end, scan_cpu_finished - encode_cpu_end)):
-                            discovery_phases.add(name, wall)
-                            discovery_cpu_phases.add(name, cpu)
-                        cpu_duration = scan_cpu_finished - scan_cpu_start
-                        discovery_cpu_sum += cpu_duration
-                        discovery_cpu_max = max(discovery_cpu_max, cpu_duration)
-                        duration = scan_finished - scan_start
-                        discovery_duration_sum += duration
-                        discovery_duration_max = max(discovery_duration_max, duration)
-                        discovery_overruns += duration > discovery_interval_ns
-                        next_scan_ns += discovery_interval_ns
-                        if next_scan_ns <= scan_finished:
-                            missed = (scan_finished - next_scan_ns) // discovery_interval_ns + 1
-                            skipped_discovery_deadlines += missed
-                            next_scan_ns += missed * discovery_interval_ns
-                    end = time.monotonic_ns()
-            except KeyboardInterrupt as exc:
-                interrupted = exc
-                end = time.monotonic_ns()
-            if relations:
-                with defer_interrupts():
-                    relation_stream.write(json.dumps({'schema_version': 1, 'event': 'observation_ended',
-                        'monotonic_ns': end, 'reason': 'monitor window closed; no continuing validity asserted'},
-                        separators=(',', ':')) + '\n')
-                    relation_stream.flush()
-        if sampler.error:
-            raise RuntimeError('resource sampling failed: ' + sampler.error)
+                        except BaseException as exc:
+                            _cleanup_error(status, 'relation_window_close', exc)
+                            if observation_error is None and interrupted is None:
+                                observation_error = exc
+                                raise
+        except BaseException as exc:
+            if observation_error is not None and exc is not observation_error:
+                _cleanup_error(status, 'observation_stream_close', exc)
+                raise observation_error from exc
+            if interrupted is not None and exc is not interrupted:
+                _cleanup_error(status, 'observation_stream_close', exc)
+                raise interrupted from exc
+            raise
+        if observation_error is not None:
+            raise observation_error
         # Finish reading and writing evidence before responding to late signals.
         # A pending cancellation is reconciled by the outer handler below.
         with defer_interrupts():
@@ -411,29 +460,56 @@ def run_monitor(config, output, proc_root=Path('/proc'), *, workload=None):
             raise interrupted
         return summary
     except BaseException as exc:
-        status.update(status='interrupted' if isinstance(exc, KeyboardInterrupt) else 'failed',
-                      error=str(exc), error_type=type(exc).__name__)
-        if isinstance(exc, KeyboardInterrupt) and summary is not None:
-            with defer_interrupts():
-                summary['status'] = 'interrupted'
-                _json(output / 'monitor-summary.json', summary)
-                write_monitor_report(output, summary)
+        if interrupted is not None and exc is not interrupted:
+            _cleanup_error(status, 'interrupted_summary_or_report', exc)
+            primary_error = interrupted
+        else:
+            primary_error = exc
+        status.update(status='interrupted' if isinstance(primary_error, KeyboardInterrupt) else 'failed',
+                      error=str(primary_error), error_type=type(primary_error).__name__)
+        if isinstance(primary_error, KeyboardInterrupt) and summary is not None and summary['status'] != 'interrupted':
+            try:
+                with defer_interrupts():
+                    summary['status'] = 'interrupted'
+                    _json(output / 'monitor-summary.json', summary)
+                    write_monitor_report(output, summary)
+            except BaseException as cleanup:
+                _cleanup_error(status, 'interrupted_report_write', cleanup)
+        if primary_error is not exc:
+            raise primary_error from exc
         raise
     finally:
+        if end is None:
+            end = time.monotonic_ns()
         status['resource_sampler_error'] = sampler.error if sampler is not None else None
         status['window_start_ns'], status['window_end_ns'] = start, end
         try:
             with defer_interrupts():
                 _json(output / 'monitor-status.json', status)
         except KeyboardInterrupt as exc:
-            status.update(status='interrupted', error=str(exc), error_type='KeyboardInterrupt')
-            with defer_interrupts():
-                if summary is not None:
-                    summary['status'] = 'interrupted'
-                    _json(output / 'monitor-summary.json', summary)
-                    write_monitor_report(output, summary)
-                _json(output / 'monitor-status.json', status)
-            raise
+            if primary_error is not None:
+                _cleanup_error(status, 'final_status_write', exc)
+                try:
+                    with defer_interrupts():
+                        _json(output / 'monitor-status.json', status)
+                except BaseException as cleanup:
+                    _cleanup_error(status, 'final_status_retry', cleanup)
+            else:
+                status.update(status='interrupted', error=str(exc), error_type='KeyboardInterrupt')
+                try:
+                    with defer_interrupts():
+                        if summary is not None:
+                            summary['status'] = 'interrupted'
+                            _json(output / 'monitor-summary.json', summary)
+                            write_monitor_report(output, summary)
+                        _json(output / 'monitor-status.json', status)
+                except BaseException as cleanup:
+                    _cleanup_error(status, 'interrupted_status_write', cleanup)
+                raise
+        except BaseException as exc:
+            if primary_error is None:
+                raise
+            _cleanup_error(status, 'final_status_write', exc)
 
 
 def main():

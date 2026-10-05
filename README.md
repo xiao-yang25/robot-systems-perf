@@ -103,6 +103,8 @@ robot-perf-monitor --profile light --require-jetson --include-name '^component_c
 
 0.6.0 可通过 `--workload workload.local.json` 使用业务清单代替活动发现触发规则，多个功能共享进程时引用同一资源记录。模板、范围约束与有限设备复核见 [业务功能关系指南](docs/BUSINESS_MAPPING.md)；ROS 图、回调和真实路径时延仍待后续接入。
 
+0.6.1 提前拒绝 metadata 读取前的参数冲突，纯 PID 清单只读取 PID 并集内的进程详情，并补齐异常窗口结束记录、保留原始错误。现场开销收益和业务扰动需按指南的有限对照分别验证。
+
 ## 结果与检查
 
 阅读套件目录下的 `SUITE_REPORT.md`，再查看每个 case 的 `REPORT.md` 和 `summary.json`。`suite-status.json` / `run-status.json` 的 complete 只表示采集成功；业务达标、输入质量和采集开销分别判断。失败退出非零并保留证据；结果不进入 Git。
