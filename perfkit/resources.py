@@ -299,6 +299,12 @@ class ResourceSampler:
         with self._lock:
             self._registered.pop(int(pid), None)
 
+    def registered_identity(self, pid):
+        """Snapshot the current resource registration for references, not liveness."""
+        with self._lock:
+            item = self._registered.get(int(pid))
+            return dict(item) if item is not None else None
+
     def set_window(self, scenario, rep, phase):
         with self._lock:
             self._window = {'scenario': scenario, 'rep': rep, 'phase': phase}

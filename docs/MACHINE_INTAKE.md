@@ -2,7 +2,7 @@
 
 M1 为每次接入保存机器档案、接口能力、建议配置和执行状态。它只读取当前进程可见的接口、查找工具文件和计算本工具模块摘要，不启动外部命令、性能负载或业务采集，不改变设备设置。Python 运行只依赖标准库；不需要 ROS、C++ 构建或 root。
 
-已在原生 ARM64 Linux 容器验证安装、输出和失败路径。用户反馈 0.5.0 的 Orin/Thor 现场接入复核通过，但跳过温度依赖外部测试屏蔽，不表示该版本 CLI 支持跳过。0.5.1 新增显式跳过选项，仍需一次针对性设备复核；M2 业务关系建档仍是后续工作。
+已在原生 ARM64 Linux 容器验证安装、输出和失败路径。用户反馈 0.5.0 的 Orin/Thor 现场接入复核通过，但跳过温度依赖外部测试屏蔽，不表示该版本 CLI 支持跳过。0.5.1 新增显式跳过选项，仍需一次针对性设备复核；M2a业务清单与资源引用已接入，见 [业务功能关系指南](BUSINESS_MAPPING.md)，设备业务复核待执行。
 
 ## 安装与首次执行
 
@@ -27,7 +27,7 @@ robot-perf-intake --view native-host --require-jetson --machine-id robot-demo \
 python3 -m venv --without-pip "$HOME/.venvs/robot-systems-perf"
 "$HOME/.venvs/robot-systems-perf/bin/python" -m ensurepip --upgrade
 "$HOME/.venvs/robot-systems-perf/bin/python" -m pip install --no-index \
-  /path/to/robot_systems_perf-0.5.1-py3-none-any.whl
+  /path/to/robot_systems_perf-0.6.0-py3-none-any.whl
 ```
 
 [Python ensurepip 官方说明](https://docs.python.org/3.10/library/ensurepip.html) 明确该引导不访问网络；发行版可能未提供它，不因此自动安装系统包。若 venv/ensurepip 均缺失，完整源码包可直接离线运行，在任意目录单次指定模块位置：

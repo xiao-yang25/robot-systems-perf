@@ -1,5 +1,6 @@
 """Installed-wheel machine intake from an unrelated cwd; controlled cancellation."""
 import argparse
+from email.parser import Parser
 import hashlib
 import importlib.util
 import json
@@ -92,7 +93,11 @@ raise SystemExit(intake.main())
         profile = json.loads((capture / 'machine-profile.json').read_text())
         caps = json.loads((capture / 'capabilities.json').read_text())
         assert status['status'] == 'complete'
-        assert profile['source']['package_version'] == '0.5.1'
+        with zipfile.ZipFile(wheel) as archive:
+            metadata_names = [name for name in archive.namelist() if name.endswith('.dist-info/METADATA')]
+            assert len(metadata_names) == 1
+            expected_version = Parser().parsestr(archive.read(metadata_names[0]).decode())['Version']
+        assert profile['source']['package_version'] == expected_version
         assert profile['source']['git_revision'] is None
         assert profile['source']['sha256']['perfkit/intake.py']
         with zipfile.ZipFile(wheel) as archive:

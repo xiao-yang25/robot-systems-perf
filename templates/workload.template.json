@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "workload_id": "robot-demo",
+  "workload_version": null,
+  "ros_domain_id": null,
+  "functions": [
+    {
+      "id": "perception",
+      "process_selector": {"include_names": ["^demo_container$"]},
+      "expected_processes": 1,
+      "ros_nodes": ["/demo/detector", "/demo/tracker"],
+      "relation_source": "operator_declared"
+    },
+    {
+      "id": "control",
+      "process_selector": {"include_names": ["^demo_control$"]},
+      "expected_processes": 1,
+      "ros_nodes": ["/demo/control"],
+      "relation_source": "operator_declared"
+    }
+  ]
+}

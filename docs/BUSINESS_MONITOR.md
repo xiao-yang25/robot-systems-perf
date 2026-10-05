@@ -25,7 +25,7 @@ Ubuntu若未提供 venv/pip，先准备相应 Python 工具。安装构建使用
 
 ```bash
 python3 -m pip wheel --no-deps . --wheel-dir dist
-python3 -m pip install --no-index /path/to/robot_systems_perf-0.5.1-py3-none-any.whl
+python3 -m pip install --no-index /path/to/robot_systems_perf-0.6.0-py3-none-any.whl
 ```
 
 上述是准备机器与设备分别执行的命令，wheel文件路径及版本需替换。wheel提供机器接入、业务资源采集的命令与Python模块；C01/S01需要C++构建，仍使用源码仓库的 Docker/native 入口。无pip/ensurepip的设备处理方式见 [机器接入指南](MACHINE_INTAKE.md#无-pip-或离线设备)。
@@ -187,3 +187,7 @@ robot-perf-monitor --require-jetson --system-interval 0.5 --process-interval 0.5
 新证据包括 `resources-costs.jsonl`，开启遥测时另有 `resources-tegrastats.jsonl` 和 `.stderr.log`。摘要记录各层覆盖、采集进程CPU、阶段墙钟/线程CPU成本、线程范围、遥测字段原因与预算。示例 `--max-cycle-fraction 0.2 --max-observer-cpu-percent 5` 只是用户设定预算的方式，数值不是Orin/Thor的推荐达标线。周期成本不含成本日志自身写入；`observer.cpu_percent_one_core` 保留父进程口径，`observer.total_cpu_percent_one_core` 增加自有tegrastats子进程共同有效区间的成本，CPU预算采用后者。开启遥测但子进程CPU存在缺口时，预算显示无法评估；预算状态不能代替业务无采集对照。优化和缓存边界见 [架构说明](ARCHITECTURE.md)，同覆盖复测与脱敏交接见 [设备指南](JETSON_RUNBOOK.md#同覆盖复测)。
 
 详细职责、窗口与计数口径、第一阶段/第二阶段推进顺序见 [架构设计](ARCHITECTURE.md)。
+
+## 按业务功能建档
+
+0.6.0 支持 `--workload`，以现场业务清单替代全局活动/名称/PID触发规则，同时保留全局UID、排除项、cgroup和总目标上限。多个功能共享资源只引用一份记录，节点名仍为声明，见 [业务功能关系指南](BUSINESS_MAPPING.md)。没有清单时原有发现行为保持。

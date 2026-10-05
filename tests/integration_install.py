@@ -1,5 +1,6 @@
 """Offline wheel installation and multi-process monitoring from an unrelated cwd."""
 import argparse
+from email.parser import Parser
 import hashlib
 import importlib.util
 import json
@@ -67,7 +68,11 @@ def verify(wheel, output, pip_root=None):
             threads = [item for item in entities.values() if item['kind']=='thread' and item['pid']==first.pid]
             assert {'rk_thread_a','rk_thread_b'} <= {item['comm'] for item in threads}
             assert summary['quality']['peak_registered_targets'] == 2
-            assert environment['source']['package_version'] == '0.4.0'
+            with zipfile.ZipFile(wheel) as archive:
+                names = [name for name in archive.namelist() if name.endswith('.dist-info/METADATA')]
+                assert len(names) == 1
+                expected_version = Parser().parsestr(archive.read(names[0]).decode())['Version']
+            assert environment['source']['package_version'] == expected_version
             assert environment['source']['git_revision'] is None
             with zipfile.ZipFile(wheel) as archive:
                 for name, digest in environment['source']['sha256'].items():

@@ -1,6 +1,7 @@
 """Discover and observe existing Linux processes without owning their lifecycle."""
 import argparse
 import copy
+from contextlib import ExitStack
 import hashlib
 from importlib import metadata
 import json
@@ -18,6 +19,7 @@ from .lifecycle import defer_interrupts
 from .acceptance import resource_state
 from .platform_probe import collect_profile
 from .resources import ResourceSampler, summarize_resources, validate_resource_options, _Costs
+from .workload import BusinessRelations, WorkloadSelector, validate_workload, write_business_report
 
 
 LIMITS = [
@@ -139,7 +141,8 @@ def write_monitor_report(output, summary):
                        key=lambda item: -(item['cpu_percent_one_core'] or 0))
     lines = ['# 业务进程资源采集报告', '',
              '采集状态：' + summary['status'], '',
-             '按 CPU 活动发现的是候选对象，名称规则和 PID 指定也会记入筛选依据。',
+             ('业务清单按功能筛选候选，人工声明不证明算法或ROS节点归属。' if 'workload' in summary else
+              '按 CPU 活动发现的是候选对象，名称规则和 PID 指定也会记入筛选依据。'),
              '完整资源、线程与发现记录见 monitor-summary.json、resources.jsonl、discovery.jsonl。', '',
              '| PID | 进程名 | CPU %（单核=100） | RSS 采样峰值（bytes） |',
              '| ---: | --- | ---: | ---: |']
@@ -159,10 +162,17 @@ def write_monitor_report(output, summary):
               '## 解释边界', '']
     lines.extend('- ' + limit for limit in summary['limits'])
     (output / 'MONITOR_REPORT.md').write_text('\n'.join(lines) + '\n')
+    if 'workload' in summary:
+        write_business_report(output, summary)
 
 
-def run_monitor(config, output, proc_root=Path('/proc')):
+def run_monitor(config, output, proc_root=Path('/proc'), *, workload=None):
     config = validate_config(config)
+    if workload is not None:
+        workload = validate_workload(workload)
+        selector = WorkloadSelector(config, workload, os.sysconf('SC_CLK_TCK'))
+    else:
+        selector = DiscoverySelector(config, os.sysconf('SC_CLK_TCK'))
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     status = {'status': 'running', 'error': None, 'scans': 0, 'registrations': 0}
@@ -178,23 +188,38 @@ def run_monitor(config, output, proc_root=Path('/proc')):
     skipped_discovery_deadlines = 0
     selected = {}
     summary = None
+    relations = None
     try:
         _json(output / 'monitor-config.json', config)
         _json(output / 'monitor-status.json', status)
-        profile = collect_profile(include_kernel_command_line=False)
+        profile_kwargs = {'include_kernel_command_line': False}
+        if workload is not None:
+            profile_kwargs['skip_temperature'] = config['resource_options'].get('skip_temperatures', False)
+        profile = collect_profile(**profile_kwargs)
+        namespace = os.readlink(proc_root / 'self/ns/pid') if (proc_root / 'self/ns/pid').exists() else None
         _json(output / 'environment.json', {'host_profile': profile, 'source': _source_record(),
-              'pid_namespace': os.readlink(proc_root / 'self/ns/pid') if (proc_root / 'self/ns/pid').exists() else None,
+              'pid_namespace': namespace,
               'observer_pid': os.getpid(), 'observer_uid': os.getuid(), 'limits': LIMITS})
         if config['require_jetson'] and not profile['checks']['jetson_detected']:
             raise RuntimeError('Expected native Linux ARM64 Jetson; inspect environment.json')
-        selector = DiscoverySelector(config, os.sysconf('SC_CLK_TCK'))
+        if workload is not None:
+            _json(output / 'workload-profile.json', {'format_version': 1, 'workload': workload,
+                'workload_sha256': hashlib.sha256(json.dumps(workload, sort_keys=True,
+                    ensure_ascii=False, allow_nan=False).encode()).hexdigest(),
+                'pid_namespace': namespace, 'monitor_scope': config,
+                'selection_mode': 'function_selectors_only; global hard filters intersect each function',
+                'limitations': ['Node/domain/version labels are operator declarations, not ROS runtime verification.',
+                                'Relations and resource registration IDs are local to this monitor run.']})
+            relations = BusinessRelations(workload, namespace)
         sampler_kwargs = {'window_source': 'monitor_monotonic_timestamps'}
         if config['resource_options']:
             sampler_kwargs['options'] = config['resource_options']
         sampler = ResourceSampler(output / 'resources.jsonl', config['resource_sampling_seconds'],
                                   **sampler_kwargs)
         sampler.set_window('business-monitor', None, 'observing')
-        with (output / 'discovery.jsonl').open('x') as stream:
+        with ExitStack() as files:
+            stream = files.enter_context((output / 'discovery.jsonl').open('x'))
+            relation_stream = files.enter_context((output / 'business-relations.jsonl').open('x')) if relations else None
             try:
                 with sampler:
                     start = time.monotonic_ns()
@@ -246,6 +271,15 @@ def run_monitor(config, output, proc_root=Path('/proc')):
                         peak_selected = max(peak_selected, len(selected))
                         omitted_scans += decision['selection']['omitted_count'] > 0
                         skipped_process_reads += inventory['scan'].get('skipped_count', 0)
+                        if relations:
+                            registrations = {pid: sampler.registered_identity(pid) for pid in selected}
+                            with defer_interrupts():
+                                record = relations.observe(decision, registrations, inventory,
+                                                           scan_start, time.monotonic_ns())
+                                relation_payload = json.dumps(record, ensure_ascii=False, allow_nan=False,
+                                                              separators=(',', ':')) + '\n'
+                                relation_stream.write(relation_payload)
+                                relation_stream.flush()
                         selection_end, selection_cpu_end = time.monotonic_ns(), time.thread_time_ns()
                         payload = json.dumps({'monotonic_ns': now, 'scan_start_ns': scan_start,
                             'scan': inventory['scan'], 'selection': decision['selection'],
@@ -284,6 +318,12 @@ def run_monitor(config, output, proc_root=Path('/proc')):
             except KeyboardInterrupt as exc:
                 interrupted = exc
                 end = time.monotonic_ns()
+            if relations:
+                with defer_interrupts():
+                    relation_stream.write(json.dumps({'schema_version': 1, 'event': 'observation_ended',
+                        'monotonic_ns': end, 'reason': 'monitor window closed; no continuing validity asserted'},
+                        separators=(',', ':')) + '\n')
+                    relation_stream.flush()
         if sampler.error:
             raise RuntimeError('resource sampling failed: ' + sampler.error)
         # Finish reading and writing evidence before responding to late signals.
@@ -352,6 +392,19 @@ def run_monitor(config, output, proc_root=Path('/proc')):
                            'business_chain': {'status': 'not_evaluated',
                                'reason': 'no correlated business events, input evidence or application deadline'}},
                        'limits': LIMITS}
+            if relations:
+                summary['quality']['discovery']['duration_scope'] += '_including_workload_relations_when_enabled'
+                summary['workload'] = relations.summary(resources)
+                if any(row.get('last_scan') is None or
+                       row['last_scan']['status'] != 'candidate' or
+                       not row['last_scan']['scope_complete'] or
+                       any(state != 'candidate' and count for state, count in row['scan_status_counts'].items()) or
+                       any(row['quality_counts'].values()) or
+                       row['last_scan']['omitted_by_target_cap'] or
+                       any(item['resource_ref'] is None for item in row['last_scan']['candidates']) or
+                       row['unavailable_resource_refs'] for row in summary['workload']['functions']):
+                    summary['quality']['status'] = 'review_required'
+                    summary['quality']['warnings'].append('Business relations need review; inspect workload statuses, scope and resource references.')
             _json(output / 'monitor-summary.json', summary)
             write_monitor_report(output, summary)
         if interrupted:
@@ -386,6 +439,7 @@ def run_monitor(config, output, proc_root=Path('/proc')):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path)
+    parser.add_argument('--workload', type=Path, help='operator-declared functions and per-function process selectors')
     parser.add_argument('--profile', choices=('light', 'full'),
                         help='coverage preset; config and CLI override it; budgets remain unset')
     parser.add_argument('--output', type=Path, required=True)
@@ -410,6 +464,8 @@ def main():
         parser.add_argument('--' + option, action='append')
     parser.add_argument('--pid', type=int, action='append')
     args = parser.parse_args()
+    if args.workload and (args.include_name or args.pid or args.active_cpu_percent is not None):
+        parser.error('--workload uses per-function selectors; global name/PID/activity options are unsupported')
     if platform.system() != 'Linux':
         parser.error('Business monitoring requires Linux procfs; run on the target host')
     config = profile_config(args.profile) if args.profile else {}
@@ -468,7 +524,11 @@ def main():
         raise KeyboardInterrupt('monitor interrupted by signal ' + str(signum))
     signal.signal(signal.SIGTERM, terminate)
     try:
-        run_monitor(config, args.output)
+        if args.workload:
+            workload = validate_workload(json.loads(args.workload.read_text(encoding='utf-8')))
+            run_monitor(config, args.output, workload=workload)
+        else:
+            run_monitor(config, args.output)
     except KeyboardInterrupt:
         raise SystemExit(130)
     print('Monitor report:', args.output / 'MONITOR_REPORT.md')

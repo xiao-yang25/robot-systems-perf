@@ -15,6 +15,7 @@
 | 资源 | 每核 CPU、进程/线程 CPU 与可用 schedstat、RSS、缺页、切换、cgroup 节流、温度/频率与可见功率传感器；可选 Jetson GPU/EMC 活动遥测 |
 | 测试套件 | 参考点、大小载荷、高频、QoS、慢消费者、CPU 干扰及资源采集 ABBA 开销对照 |
 | 业务进程采集 | 自动发现现有活跃进程、按名称/PID纳入对象、动态线程与进程重启跟踪；输出资源而非消息时延 |
+| M2a：业务功能关系 | 现场清单按功能独立筛选进程，保存身份、歧义/冲突与共享资源引用；节点归属保持人工声明 |
 
 保留原始 CSV、配置、环境、资源 JSONL 和逐轮报告；缺失能力标为不可用。内核等待是采样区间累计值，不能定位单次调度原因；内部队列、执行器就绪等待、GPU 推理干扰和真实机器人业务链路尚未实现。
 
@@ -99,6 +100,8 @@ robot-perf-monitor --profile light --require-jetson --include-name '^component_c
 内建 `--profile light` 每秒采集系统/进程、关闭线程；`--profile full` 每0.5秒包含全部可见线程。两者最多256个目标、跳过温度、不预设开销预算；配置文件和命令行可覆盖。降低频率或关闭线程改变覆盖，不能记作同范围优化。已有明确服务 cgroup 时，可用 `--cgroup-pattern` 配合 `--cgroup-prefilter` 减少范围外的详情读取，默认关闭。
 
 读取业务结果目录的 `MONITOR_REPORT.md`、`monitor-summary.json` 和 `discovery.jsonl`；无目标或覆盖不足会提示复核。
+
+0.6.0 可通过 `--workload workload.local.json` 使用业务清单代替活动发现触发规则，多个功能共享进程时引用同一资源记录。模板、范围约束与有限设备复核见 [业务功能关系指南](docs/BUSINESS_MAPPING.md)；ROS 图、回调和真实路径时延仍待后续接入。
 
 ## 结果与检查
 
