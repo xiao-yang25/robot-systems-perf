@@ -16,12 +16,14 @@ from scripts import compare_tools as compare
 from tests.process_helpers import OwnedProcesses
 
 BABELTRACE_HELP = (Path(__file__).parent / 'fixtures/babeltrace-1.5.8-help.txt').read_text()
+CYCLICTEST_HELP = (Path(__file__).parent / 'fixtures/cyclictest-2.5-help.txt').read_text()
 
 
 class ComparisonEvidenceTests(unittest.TestCase):
     def test_tool_probe_requires_clean_recognized_version_and_help(self):
         compare.validate_tool_probe('pidstat', 'sysstat version 12.8.1\n')
         compare.validate_tool_probe('babeltrace', BABELTRACE_HELP)
+        compare.validate_tool_probe('cyclictest', CYCLICTEST_HELP)
         for tool, text in [('pidstat', ''), ('pidstat', 'unrecognized banner'),
                            ('babeltrace', 'BabelTrace Trace Viewer and Converter 1.5.8\n'),
                            ('babeltrace', 'BabelTrace Trace Viewer and Converter 1.5.8\nusage : babeltrace [OPTIONS]\n'),
@@ -30,6 +32,15 @@ class ComparisonEvidenceTests(unittest.TestCase):
                            ('pidstat', 'sysstat version 12.8.1\nTraceback (most recent call last):')]:
             with self.subTest(tool=tool, text=text), self.assertRaises(RuntimeError):
                 compare.validate_tool_probe(tool, text)
+
+    def test_required_help_options_reject_prefixes_and_truncation(self):
+        for tool, original, flags in [('cyclictest', CYCLICTEST_HELP, ['clock', 'affinity', 'mainaffinity']),
+                                      ('babeltrace', BABELTRACE_HELP, ['fields', 'input-format', 'clock-cycles'])]:
+            for flag in flags:
+                with self.subTest(tool=tool, flag=flag), self.assertRaises(RuntimeError):
+                    compare.validate_tool_probe(tool, original.replace('--' + flag, '--' + flag + '-extra'))
+            with self.subTest(tool=tool, truncated=True), self.assertRaises(RuntimeError):
+                compare.validate_tool_probe(tool, '\n'.join(original.splitlines()[:3]))
 
     def test_pid_reuse_and_reset_cannot_be_compared(self):
         start = {'starttime_ticks': 10, 'utime_ticks': 20, 'stime_ticks': 3,
@@ -106,6 +117,24 @@ class ComparisonEvidenceTests(unittest.TestCase):
 
 @unittest.skipUnless(platform.system() == 'Linux', 'real pidfd lifecycle requires Linux')
 class ComparisonLifecycleTests(unittest.TestCase):
+    def test_observation_failure_reaps_owned_command_and_preserves_external_target(self):
+        owner = OwnedProcesses()
+        try:
+            external = common.launch(owner, [sys.executable, '-c', 'import time; time.sleep(30)'])
+            def reject(handle):
+                self.assertTrue(handle.alive())
+                raise RuntimeError('actual worker conditions differ')
+            with tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory) / 'observer-failed'
+                with self.assertRaisesRegex(RuntimeError, 'actual worker conditions differ'):
+                    common.execute([sys.executable, '-c', 'import time; time.sleep(30)'], folder, 5, observe=reject)
+                record = json.loads((folder / 'result.json').read_text())
+                self.assertFalse(Path('/proc', str(record['pid'])).exists())
+                self.assertTrue((folder / 'command.log').exists())
+                self.assertIsNone(external.poll())
+        finally:
+            owner.cleanup()
+
     def test_fast_command_and_existing_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory) / 'fast'

@@ -15,7 +15,7 @@ def histogram(bins=100000, overflow=0):
             + ''.join('%06d %06d\n' % (i, 1 if i == 0 else 2 if i == 1 else 3 if i == 2 else 0) for i in range(bins))
             + '# Total: 6\n# Min Latencies: 0\n# Avg Latencies: 1\n# Max Latencies: 2\n'
             + '# Histogram Overflows: %d\n# Histogram Overflow at cycle number:\n# Thread 0:%s\n'
-            % (overflow, ''.join(' %d' % i for i in range(overflow))))
+            % (overflow, ''.join(' %d' % i for i in range(min(overflow, bins))) + (' # %d others' % (overflow - bins) if overflow > bins else '')))
 
 
 class WakeupComparisonTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class WakeupComparisonTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def execute(self, command, folder, timeout, env=None, discover=False):
+    def execute(self, command, folder, timeout, env=None, discover=False, observe=None):
         self.calls.append((command, folder, timeout, env, discover))
         if "--period-ns" in command:
             count = int(command[command.index('--count') + 1])
@@ -54,21 +54,27 @@ class WakeupComparisonTests(unittest.TestCase):
             (folder / "samples.csv").write_text('\n'.join(rows) + '\n', encoding="utf-8")
         else:
             (folder / "command.log").write_text(histogram(), encoding="utf-8")
+        if observe is not None:
+            main = {'tid': 100, 'starttime_ticks': 50, 'affinity_cpu_list': str(observe.cpu),
+                    'policy': 0, 'rt_priority': 0, 'nice': observe.nice}
+            threads = [main] + ([dict(main, tid=101)] if observe.tool == 'cyclictest' else [])
+            observe.check(100, threads, 1000000000)
+            observe.check(100, threads, 1250000000)
         return {"returncode": 0, "command": command, "elapsed_ns": 2000000000,
                 "cpu_seconds": 0.01, "cpu_percent_one_core": 0.5}
 
     def test_literal_commands_order_metrics_and_evidence(self):
-        records = wakeup.wakeup_runs(self.root / "output", 2, 3, self.execute)
+        records = wakeup.wakeup_runs(self.root / "output", 2, 3, self.execute, cpu=2)
         self.assertEqual([record["tool"] for record in records],
                          ["s01", "cyclictest", "cyclictest", "s01", "s01", "cyclictest"])
         self.assertEqual([record["repetition"] for record in records], [1, 1, 2, 2, 3, 3])
         first = self.calls[0]
-        self.assertEqual(first[0], [str(self.s01), "--period-ns", "1000000", "--work-ns", "0",
+        self.assertEqual(first[0], ["/usr/bin/taskset", "-c", "2", str(self.s01), "--period-ns", "1000000", "--work-ns", "0",
                                    "--count", "2000", "--warmup", "0", "--output",
                                    str(first[1] / "samples.csv")])
-        self.assertEqual(self.calls[1][0], [str(self.cyclictest), "--priority=0", "--policy=other",
+        self.assertEqual(self.calls[1][0], ["/usr/bin/taskset", "-c", "2", str(self.cyclictest), "--priority=0", "--policy=other",
                                            "--default-system", "--threads=1", "--clock=0",
-                                           "--interval=1000", "--duration=2", "--quiet", "--histogram=100000"])
+                                           "--interval=1000", "--duration=2", "--quiet", "--histogram=100000", "--affinity=2", "--mainaffinity=2"])
         self.assertTrue(all(call[2:] == (32, None, False) for call in self.calls))
         metrics = records[0]["metrics"]
         self.assertEqual(metrics["start_deviation_ns"],
@@ -76,7 +82,7 @@ class WakeupComparisonTests(unittest.TestCase):
         self.assertIsNone(metrics["response_time"]["distribution"])
         self.assertIn("finish_ns", metrics["response_time"]["boundary"])
         settings = json.loads((first[1] / "settings.json").read_text())
-        self.assertEqual(settings["effective_requested_affinity"], [2, 5])
+        self.assertEqual(settings["effective_requested_affinity"], [2])
         self.assertEqual(settings["tool_evidence"]["sha256"], hashlib.sha256(b"literal s01 binary").hexdigest())
         self.assertIsNone(records[1]["metrics"]["start_deviation_ns"])
         self.assertIsNone(records[1]["settings"]["requested_sample_count"])
@@ -93,42 +99,42 @@ class WakeupComparisonTests(unittest.TestCase):
         policy_set.assert_not_called()
 
     def test_invalid_cpu_policy_and_inputs_fail_before_execution(self):
-        for cpu in (0, 3, True, "2"):
+        for cpu in (None, 0, 3, True, "2"):
             with self.subTest(cpu=cpu), self.assertRaises(ValueError):
                 wakeup.wakeup_runs(self.root / "invalid", 1, 1, self.execute, cpu=cpu)
         for field, value in (("seconds", 0), ("seconds", 1001), ("seconds", True),
                              ("seconds", 1.1), ("repetitions", 0), ("repetitions", True)):
             values = {"seconds": 1, "repetitions": 1, field: value}
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
-                wakeup.wakeup_runs(self.root / "invalid", execute=self.execute, **values)
+                wakeup.wakeup_runs(self.root / "invalid", execute=self.execute, cpu=2, **values)
         with patch.object(wakeup.os, "sched_getscheduler", return_value=1), \
                 self.assertRaisesRegex(RuntimeError, "SCHED_OTHER"):
-            wakeup.wakeup_runs(self.root / "invalid", 1, 1, self.execute)
+            wakeup.wakeup_runs(self.root / "invalid", 1, 1, self.execute, cpu=2)
         with patch.object(wakeup.os, "sched_getparam", return_value=type("Param", (), {"sched_priority": 2})()), \
                 self.assertRaisesRegex(RuntimeError, "priority 0"):
-            wakeup.wakeup_runs(self.root / "invalid", 1, 1, self.execute)
+            wakeup.wakeup_runs(self.root / "invalid", 1, 1, self.execute, cpu=2)
         self.assertEqual(self.calls, [])
         self.assertFalse((self.root / "invalid").exists())
 
     def test_missing_capabilities_fail_without_substituting_tools(self):
-        with patch.object(wakeup.shutil, "which", return_value=None), \
+        with patch.object(wakeup.shutil, "which", side_effect=lambda name: '/usr/bin/taskset' if name == 'taskset' else None), \
                 self.assertRaisesRegex(RuntimeError, "cyclictest is unavailable"):
-            wakeup.wakeup_runs(self.root / "missing", 1, 1, self.execute)
+            wakeup.wakeup_runs(self.root / "missing", 1, 1, self.execute, cpu=2)
         with patch.object(wakeup.shutil, "which", side_effect=lambda name: str(self.cyclictest) if name == "cyclictest" else None), \
                 self.assertRaisesRegex(RuntimeError, "taskset"):
             wakeup.wakeup_runs(self.root / "missing", 1, 1, self.execute, cpu=2)
         self.s01.unlink()
         with self.assertRaisesRegex(RuntimeError, "built executable missing"):
-            wakeup.wakeup_runs(self.root / "missing", 1, 1, self.execute)
+            wakeup.wakeup_runs(self.root / "missing", 1, 1, self.execute, cpu=2)
         self.assertEqual(self.calls, [])
 
     def test_failure_preserves_manifest_and_propagates_without_retry(self):
-        def fail(command, folder, timeout):
+        def fail(command, folder, timeout, observe=None):
             self.calls.append(command)
             (folder / "stderr.txt").write_text("unsupported option\n", encoding="utf-8")
             raise RuntimeError("tool failed")
         with self.assertRaisesRegex(RuntimeError, "tool failed"):
-            wakeup.wakeup_runs(self.root / "failed", 1, 3, fail)
+            wakeup.wakeup_runs(self.root / "failed", 1, 3, fail, cpu=2)
         folder = self.root / "failed" / "wakeup-01-s01"
         self.assertEqual(len(self.calls), 1)
         self.assertTrue((folder / "settings.json").is_file())
@@ -141,7 +147,7 @@ class WakeupComparisonTests(unittest.TestCase):
         raw = folder / "stdout.txt"
         raw.write_text("prior evidence", encoding="utf-8")
         with self.assertRaises(FileExistsError):
-            wakeup.wakeup_runs(self.root / "existing", 1, 2, self.execute)
+            wakeup.wakeup_runs(self.root / "existing", 1, 2, self.execute, cpu=2)
         self.assertEqual(raw.read_text(), "prior evidence")
         self.assertEqual(self.calls, [])
 
@@ -150,11 +156,11 @@ class WakeupComparisonTests(unittest.TestCase):
         for name, rows in [('empty', ''), ('truncated', '0,1000000,1000030,1000090,5,1\n'),
                            ('warmup', '0,1000000,1000030,1000090,5,0\n')]:
             with self.subTest(name=name):
-                def incomplete(command, folder, timeout):
+                def incomplete(command, folder, timeout, observe=None):
                     (folder / 'samples.csv').write_text(header + rows)
                     return {'returncode': 0}
                 with self.assertRaisesRegex(RuntimeError, 'sample counts'):
-                    wakeup.wakeup_runs(self.root / name, 2, 1, incomplete)
+                    wakeup.wakeup_runs(self.root / name, 2, 1, incomplete, cpu=2)
                 self.assertFalse((self.root / name / 'wakeup-01-cyclictest').exists())
 
     def test_histogram_counts_include_overflow_without_claiming_quantiles(self):
@@ -162,12 +168,15 @@ class WakeupComparisonTests(unittest.TestCase):
         path.write_text(histogram(3, overflow=2))
         result = wakeup.validate_cyclictest_log(path, bins=3)
         self.assertEqual((result['samples'], result['in_range_samples'], result['overflow_samples']), (8, 6, 2))
-        path.write_text(histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0: 0 # 1 others'))
-        self.assertEqual(wakeup.validate_cyclictest_log(path, bins=3)['samples'], 8)
+        path.write_text(histogram(3, overflow=5))
+        self.assertEqual(wakeup.validate_cyclictest_log(path, bins=3)['samples'], 11)
 
     def test_unqualified_cyclictest_outputs_are_rejected(self):
         valid = histogram(3)
         cases = ['', 'Usage: cyclictest <options>\n', 'unknown format\n',
+                 histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0: 999999 999999'),
+                 histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0: 1 0'),
+                 histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0: 0 # 1 others'),
                  histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0:'),
                  histogram(3, overflow=2).replace('# Thread 0: 0 1', '# Thread 0: 0 # 99 others'),
                  valid.replace('000002 000003\n', ''), valid.replace('# Total: 6', '# Total: 7'),

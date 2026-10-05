@@ -22,6 +22,11 @@ from tests.integration_resource_profiles import PROGRAM
 from tests.process_helpers import OwnedProcesses
 
 
+def help_options(text):
+    # A long option ends at '=', whitespace or punctuation, never at '-extra'.
+    return set(re.findall(r'(?<![\w-])--([A-Za-z][A-Za-z0-9_-]*)(?=[=\s,;\]\)]|$)', text))
+
+
 def validate_tool_probe(tool, text):
     lines = text.strip().splitlines()
     if not lines:
@@ -36,15 +41,15 @@ def validate_tool_probe(tool, text):
         raise RuntimeError('unrecognized tool version/help output')
     if tool in ('cyclictest', 'babeltrace') and not re.search(r'(?im)^usage\s*:', text):
         raise RuntimeError('missing recognized help output')
+    options = help_options(text)
     if tool == 'babeltrace':
         formats = re.search(r'(?im)^Formats available:\s*([^\n]+)\.\s*$', text)
         if (not formats or not {'ctf', 'text'}.issubset(set(formats[1].split(', ')))
-                or any(not re.search(r'--' + flag + r'\b', text)
-                       for flag in ('help', 'input-format', 'output-format', 'fields', 'clock-cycles'))):
+                or not {'help', 'input-format', 'output-format', 'fields', 'clock-cycles'}.issubset(options)):
             raise RuntimeError('incomplete Babeltrace help or missing CTF/text formats')
     if tool == 'cyclictest':
-        for flag in ('default-system', 'policy', 'priority', 'threads', 'clock', 'interval', 'duration', 'quiet', 'histogram'):
-            if not re.search(r'--' + flag + r'\b', text):
+        for flag in ('default-system', 'policy', 'priority', 'threads', 'clock', 'interval', 'duration', 'quiet', 'histogram', 'affinity', 'mainaffinity'):
+            if flag not in options:
                 raise RuntimeError('cyclictest required option missing: --' + flag)
 
 

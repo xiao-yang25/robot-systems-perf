@@ -15,6 +15,10 @@ import shutil
 from typing import Callable
 
 from perfkit.analysis import analyze_s01
+try:
+    from .wakeup_conditions import ThreadConditions
+except ImportError:
+    from wakeup_conditions import ThreadConditions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +35,8 @@ def validate_cyclictest_log(path, bins=100000):
     rows = population = 0
     cycles = None
     overflow_entries = None
+    overflow_cycles = []
+    others = 0
     fields = {}
     labels = ('Total', 'Min Latencies', 'Avg Latencies', 'Max Latencies', 'Histogram Overflows')
     with Path(path).open(encoding='utf-8') as stream:
@@ -70,7 +76,9 @@ def validate_cyclictest_log(path, bins=100000):
                     if thread_footer or not overflow_header:
                         raise RuntimeError('cyclictest overflow footer invalid')
                     thread_footer = True
-                    overflow_entries = len(match[1].split()) + int(match[2] or 0)
+                    overflow_cycles = [int(value) for value in match[1].split()]
+                    others = int(match[2] or 0)
+                    overflow_entries = len(overflow_cycles) + others
                 else:
                     raise RuntimeError('cyclictest histogram format unsupported')
             elif started:
@@ -80,11 +88,20 @@ def validate_cyclictest_log(path, bins=100000):
             or overflow_entries != fields.get('Histogram Overflows')
             or (cycles is not None and cycles != population + fields['Histogram Overflows'])):
         raise RuntimeError('cyclictest sampling evidence missing, zero or inconsistent')
+    samples = population + fields['Histogram Overflows']
+    # 2.2/2.5 record zero-based cycles before cycles++, in encounter order,
+    # retaining at most histogram-size entries and summarizing the rest.
+    if (len(overflow_cycles) != min(fields['Histogram Overflows'], bins)
+            or others != max(0, fields['Histogram Overflows'] - bins)
+            or any(cycle >= samples for cycle in overflow_cycles)
+            or any(a >= b for a, b in zip(overflow_cycles, overflow_cycles[1:]))):
+        raise RuntimeError('cyclictest overflow cycle indices invalid or incomplete')
     return {'validated': True, 'format': 'dense_single_thread_rt_tests_2_2_2_5',
             'histogram_bins': rows, 'in_range_samples': population,
-            'samples': population + fields['Histogram Overflows'],
+            'samples': samples,
             'sample_count_source': 'histogram Total + Histogram Overflows',
             'thread_summary_cycles': cycles,
+            'overflow_cycle_numbering': 'zero-based, strictly increasing; retention limit histogram_bins',
             'overflow_samples': fields['Histogram Overflows'], 'bucket_width_us': 1}
 
 
@@ -115,6 +132,8 @@ def _runtime_settings(cpu: int | None) -> tuple[dict, list[str]]:
     affinity = sorted(os.sched_getaffinity(0))
     if not affinity:
         raise RuntimeError("current CPU affinity is empty")
+    if cpu is None:
+        raise ValueError('wakeup comparison requires explicit --cpu; multi-CPU mask equivalence is not assumed')
     wrapper: list[str] = []
     if cpu is not None:
         if type(cpu) is not int or cpu not in affinity:
@@ -133,7 +152,7 @@ def _runtime_settings(cpu: int | None) -> tuple[dict, list[str]]:
         "priority": 0,
         "inherited_affinity": affinity,
         "effective_requested_affinity": [cpu] if cpu is not None else affinity,
-        "affinity_mode": "taskset wraps both tools" if cpu is not None else "both tools inherit caller affinity",
+        "affinity_mode": "single CPU: taskset plus cyclictest worker/main affinity; sampled actual conditions required",
         "power_management": "inherited; cyclictest --default-system preserves system power management",
         "memory_lock": "no mlock requested; allocations, inherited state and tool internals may differ",
         "work_ns": 0,
@@ -190,7 +209,7 @@ def wakeup_runs(output: Path, seconds: int, repetitions: int,
                 command = wrapper + [str(cyclictest), "--priority=0", "--policy=other",
                                      "--default-system", "--threads=1", "--clock=0",
                                      "--interval=1000", f"--duration={seconds}", "--quiet",
-                                     "--histogram=100000"]
+                                     "--histogram=100000", f"--affinity={cpu}", f"--mainaffinity={cpu}"]
             run_settings = {
                 **settings, "duration_seconds": seconds, "repetition": repetition,
                 "order_position": position, "execution_order": list(order),
@@ -200,7 +219,11 @@ def wakeup_runs(output: Path, seconds: int, repetitions: int,
                 "raw_output": "full stdout/stderr captured by common execute; histogram overflow retained",
             }
             _write_json(folder / "settings.json", run_settings)
-            execution = execute(command, folder, timeout=seconds + 30)
+            probe = ThreadConditions(tool, command[len(wrapper):], cpu, settings['nice'])
+            try:
+                execution = execute(command, folder, timeout=seconds + 30, observe=probe)
+            finally:
+                _write_json(folder / 'thread_conditions.json', probe.result())
             if tool == "s01":
                 analysis = analyze_s01(folder / "samples.csv", deadline_ns=None)
                 counts = analysis['counts']
@@ -231,10 +254,15 @@ def wakeup_runs(output: Path, seconds: int, repetitions: int,
                         "reason": "cyclictest does not measure S01 task completion response time",
                     },
                 }
+            try:
+                probe.qualify()
+            finally:
+                _write_json(folder / 'thread_conditions.json', probe.result())
             _write_json(folder / "metrics.json", metrics)
             record = {**execution, "tool": tool, "repetition": repetition,
                       "order_position": position, "run_dir": str(folder),
-                      "settings": run_settings, "metrics": metrics}
+                      "settings": run_settings, "metrics": metrics,
+                      "thread_conditions": probe.result()}
             _write_json(folder / "comparison.json", record)
             records.append(record)
     return records

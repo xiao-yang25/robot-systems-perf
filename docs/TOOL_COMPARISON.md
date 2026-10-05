@@ -40,17 +40,24 @@ python3 scripts/compare_tools.py --mode resource --pid 1234 --pid 5678 --output 
 ```bash
 cmake -S . -B build -DEP_BUILD_ROS=OFF
 cmake --build build -j2
-python3 scripts/compare_tools.py --mode wakeup --preflight --output results/wakeup-preflight-001
-python3 scripts/compare_tools.py --mode wakeup --output results/wakeup-compare-001
+# 示例 CPU 1；先核对当前 shell 允许的 CPU，再选择适合测试的一个。
+python3 -c 'import os; print(sorted(os.sched_getaffinity(0)))'
+WAKEUP_CPU=1
+python3 scripts/compare_tools.py --mode wakeup --cpu "$WAKEUP_CPU" --preflight --output results/wakeup-preflight-001
+python3 scripts/compare_tools.py --mode wakeup --cpu "$WAKEUP_CPU" --output results/wakeup-compare-001
 ```
 
-名义测量 6 分钟。双方为 1 kHz、单工作线程、CLOCK_MONOTONIC、SCHED_OTHER/优先级 0，继承当前亲和性；可加 `--cpu 2` 将双方的测试进程绑定到允许的 CPU。cyclictest 使用 `--default-system` 保留电源管理，不请求内存锁定。权限不足或版本不支持参数会失败，不自动提升权限。
+名义测量 6 分钟。唤醒对照现在必须显式指定 `--cpu`，未指定则预检查失败；不自动选择 CPU，也不把多 CPU 列表解释为相同 worker mask。双方为 1 kHz、单测量线程、CLOCK_MONOTONIC、SCHED_OTHER/实时优先级 0。taskset 约束两个测试进程，cyclictest 另使用自身的 `--affinity` 和 `--mainaffinity` 设置 worker 与主线程。cyclictest 使用 `--default-system` 保留电源管理，不请求内存锁定。权限不足或版本不支持参数会失败，不自动提升权限。
 
-预检查核对当前命令需要的全部选项，含 `--default-system`。部分发行版 rt-tests 2.2（显示 cyclictest 2.20）不提供该选项，此时应退出非零，并在 `preflight.json` 记录缺失原因；不能删除选项后沿用本对照的电源管理声明。若需继续，由操作者选择兼容二进制，通过 PATH 指定，再在新目录运行。帮助检查通过也不保证实际采样权限足够。
+启动参数仅表示请求条件。入口通过自有进程的固定 proc 目录核验线程身份，S01 的唯一主线程是测量线程，当前支持的单 worker cyclictest 用唯一非主线程识别测量线程；未知或多 worker 拓扑不能通过。每 250 ms 检查实际线程 mask、policy、实时优先级和 nice，并记录 `thread_conditions.json` 的 requested、first/last observed、检查次数及检查 wall/CPU 成本。初始配置留 250 ms，至少需要两次测量线程观察；条件不一致、身份变化、缺少证据均失败，回收自有命令并停止后续轮次。worker 正常结束后的直方图打印不算测量线程缺失。
+
+这属于抽样条件证据，不是整个采样窗口的连续追踪。检查成本在控制器侧另列；双方工具仍有内部行为差异，不能由条件通过推导完全等价或性能达标。旧版本未核验 worker 的数据保留，但不能沿用“亲和性相同”的对照结论，尤其现场已发现条件不一致的 T4000 唤醒结果。
+
+预检查用完整选项 token 核对当前命令需要的全部选项，含 `--default-system`、`--affinity` 和 `--mainaffinity`；`--clock-extra` 不能冒充 `--clock`，Babeltrace 同样拒绝同名前缀。部分发行版 rt-tests 2.2（显示 cyclictest 2.20）不提供该选项，此时应退出非零，并在 `preflight.json` 记录缺失原因；不能删除选项后沿用本对照的电源管理声明。若需继续，由操作者选择兼容二进制，通过 PATH 指定，再在新目录运行。帮助检查通过也不保证实际采样权限足够。
 
 比较 S01 的 `start_ns - scheduled_ns` 与 cyclictest 的唤醒延迟。S01 为零工作量、无预热、固定样本数；cyclictest 按持续时间结束，数量可能不同。原先 50 us 工作量的 S01 响应时间不可混入对照。
 
-S01 输出纳秒分布；cyclictest 先验证采样资格，再写入成功记录。当前支持 rt-tests 2.2/2.5 形态的单线程完整稠密直方图：100000 个连续桶、正数 Total、完整统计与 overflow 尾部；桶计数之和必须等于 Total，overflow 尾部列出的事件数加 `N others` 必须等于 Histogram Overflows。总样本数为 Total 加 Histogram Overflows；quiet + histogram 模式通常不输出线程 C 计数，若存在则必须与总样本数一致。空输出、错误/帮助、零样本、截断、计数不一致与未知/稀疏格式均失败并停止后续轮次。格式支持不代表该工具版本支持全部命令选项。
+S01 输出纳秒分布；cyclictest 先验证采样资格，再写入成功记录。当前支持 rt-tests 2.2/2.5 形态的单线程完整稠密直方图：100000 个连续桶、正数 Total、完整统计与 overflow 尾部；桶计数之和必须等于 Total，overflow 尾部列出的事件数加 `N others` 必须等于 Histogram Overflows。支持格式的 cycle 编号从 0 开始，必须小于总样本数且严格递增；最多保留 histogram_bins 个编号，超出部分用 `N others` 汇总，提前省略编号也失败。总样本数为 Total 加 Histogram Overflows；quiet + histogram 模式通常不输出线程 C 计数，若存在则必须与总样本数一致。空输出、错误/帮助、零样本、截断、计数不一致与未知/稀疏格式均失败并停止后续轮次。格式支持不代表该工具版本支持全部命令选项。
 
 `metrics.json` 的 `sampling_evidence` 记录桶内样本、overflow、总样本及计数来源。微秒直方图及原始日志保留；自动分位数仍为 null，采样资格通过不证明时延达标或两工具完全同义。手工核验后再比较，不能把微秒桶当作纳秒精度。
 
@@ -88,12 +95,13 @@ CTF、Babeltrace 解码、会话状态原文和 C01 CSV/报告保留。`trace_lo
 本次修复只需在设备做以下短复核，不要求重跑整套性能测试：
 
 ```bash
-python3 scripts/compare_tools.py --mode wakeup --preflight --output results/wakeup-fix-preflight-001
-python3 scripts/compare_tools.py --mode wakeup --seconds 5 --repetitions 1 --output results/wakeup-fix-short-001
+WAKEUP_CPU=1  # 改为本机当前允许且适合测试的 CPU
+python3 scripts/compare_tools.py --mode wakeup --cpu "$WAKEUP_CPU" --preflight --output results/wakeup-conditions-preflight-001
+python3 scripts/compare_tools.py --mode wakeup --cpu "$WAKEUP_CPU" --seconds 5 --repetitions 1 --output results/wakeup-conditions-short-001
 ```
 
-预检查失败时先处理已记录的工具兼容问题；第二条仅在预检查通过后执行。有效运行应有正样本 `sampling_evidence`；无效运行应为 `failed`、退出非零，不生成 cyclictest 的成功 `comparison.json`。保留失败目录，复跑用新目录。
+预检查失败时先处理已记录的工具兼容问题；第二条仅在预检查通过后执行。有效运行应有正样本 `sampling_evidence`，且两个工具的 `thread_conditions.validated=true`、observations≥2、测量线程实际条件与请求一致；无效运行应为 `failed`、退出非零，不生成 cyclictest 的成功 `comparison.json`。保留失败目录，复跑用新目录。三台各做一次短复核即可；修复前后的线程检查及解析故障回归通过后结束本轮资格修复，不重跑资源、219 轮套件或业务全量采集。需要恢复公平唤醒性能结论时，仅在上述条件通过后重测该项有限轮次。
 
 此前 b6c3654 的 ARM64 容器记录将 rt-tests 2.2 的错误/帮助输出误计为 cyclictest 执行完成，因此撤回该项短实跑通过的结论，旧状态不能证明实际采样。资源与 ROS trace 记录不因此补写或改动。此次验证使用原生 ARM64 Docker、Ubuntu 22.04；真实设备仍需上述短复核。容器内权限不足的采样与缺少选项的工具应明确失败，不能作为设备性能证据。
 
-本次 235 项单元/入口回归通过，覆盖退出 0 的帮助、空输出、零样本、截断、计数不一致、有效直方图与 overflow，以及预检查 127、超时和空输出。官方 rt-tests 2.5 的 3 秒短实跑通过采样资格，3000 个桶内样本、0 overflow；临时容器提供 `SYS_NICE` 权限，仅验证入口。发行版 rt-tests 2.2 缺少 `--default-system` 时在预检查被拒绝，权限不足的 2.5 实跑也退出非零。自动分位数保持 null。
+本次原生 ARM64 Docker / Ubuntu 22.04 验证：242 项单元/入口回归通过，包含选项前缀、重复/乱序/越界 overflow、未绑定 worker、错误策略、缺少 worker 证据以及检查失败后的自有进程回收。官方 rt-tests 2.5 的 3 秒单 CPU 短实跑，S01 与 cyclictest 各有 10 次有效线程条件观察；实际测量线程均为请求 CPU、policy=0、实时优先级=0、nice=0。cyclictest 获得 2992 样本、0 overflow，自动分位数仍为 null。临时容器提供 `SYS_NICE` 权限，仅验证执行与条件证据，不代表 Jetson 性能。

@@ -67,7 +67,7 @@ def launch(owner, command, **kwargs):
         os.close(write_fd)
 
 
-def execute(command, folder, timeout, env=None, discover=False):
+def execute(command, folder, timeout, env=None, discover=False, observe=None):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     command = list(map(str, command))
@@ -89,6 +89,10 @@ def execute(command, folder, timeout, env=None, discover=False):
                              cwd=ROOT, env=env)
             record['pid'] = process.pid
             while process.poll() is None:
+                if observe is not None:
+                    # Only a registered direct child is exposed, with its pinned
+                    # proc directory. Callback failures use the same cleanup path.
+                    observe(owner.handle(process))
                 if discover and len(owner.owned) < 3 and time.monotonic() >= next_discovery:
                     benchmark_children(owner)
                     next_discovery = time.monotonic() + .25
