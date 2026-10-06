@@ -20,9 +20,10 @@ if __package__ in (None, ''):
 
 from scripts.comparison_common import launch
 from tests.process_helpers import OwnedProcesses
+from tests.temperature_guard import guarded_command, assert_temperature_guard
 
 
-def verify(wheel, output):
+def verify(wheel, output, *, skip_temperature=False):
     with tempfile.TemporaryDirectory(prefix='intake-installed-') as directory:
         root = Path(directory)
         prefix = root / 'venv'
@@ -51,7 +52,10 @@ def verify(wheel, output):
                             + 'Path(' + repr(str(marker)) + ").write_text('unexpected invocation')\n")
             tool.chmod(0o755)
         env['PATH'] = str(fake_bin) + os.pathsep + env['PATH']
+        guards = []
         def command(args, *, fs_root=None, guard_thermal=False):
+            if skip_temperature and '--skip-temperature' not in args:
+                args = [*args, '--skip-temperature']
             argv = [str(executable), *args]
             if fs_root is not None or guard_thermal:
                 # Only the test supplies fs_root; --view does not change physical visibility.
@@ -81,8 +85,14 @@ raise SystemExit(intake.main())
                 argv = [str(prefix / 'bin/python'), '-c', code,
                         str(fs_root) if fs_root is not None else '',
                         'guard' if guard_thermal else '', *args]
+            if skip_temperature:
+                evidence = output / ('temperature-guard-' + str(len(guards)) + '.json')
+                guards.append(evidence)
+                argv = guarded_command(argv, prefix / 'bin/python', evidence)
             result = subprocess.run(argv, cwd=cwd, env=env,
                                     capture_output=True, text=True, timeout=15)
+            if skip_temperature:
+                assert_temperature_guard(evidence)
             return result
         help_result = command(['--help'])
         assert help_result.returncode == 0 and '--require-capability' in help_result.stdout
@@ -172,13 +182,18 @@ def pause(root):
  time.sleep(30)
  raise AssertionError('cancellation was not delivered')
 intake.hardware_facts=pause
-sys.argv=['robot-perf-intake','--output',sys.argv[1]]
+sys.argv=['robot-perf-intake','--output',sys.argv[1],*sys.argv[3:]]
 raise SystemExit(intake.main())
 """
         log = (output / 'cancel-child.log').open('x')
         try:
-            process = launch(owner, [str(prefix / 'bin/python'), '-c', code,
-                                    str(cancellation), str(ready)], cwd=cwd, env=env,
+            argv = [str(prefix / 'bin/python'), '-c', code, str(cancellation), str(ready)]
+            if skip_temperature:
+                argv.append('--skip-temperature')
+                evidence = output / 'temperature-guard-cancellation.json'
+                guards.append(evidence)
+                argv = guarded_command(argv, prefix / 'bin/python', evidence)
+            process = launch(owner, argv, cwd=cwd, env=env,
                              stdout=log, stderr=subprocess.STDOUT)
             deadline = time.monotonic() + 10
             while not ready.exists():
@@ -190,6 +205,8 @@ raise SystemExit(intake.main())
             assert not Path('/proc', str(process.pid)).exists()
             cancelled = json.loads((cancellation / 'intake-status.json').read_text())
             assert cancelled['status'] == 'interrupted'
+            if skip_temperature:
+                assert_temperature_guard(evidence)
         finally:
             try:
                 owner.cleanup()
@@ -207,6 +224,8 @@ raise SystemExit(intake.main())
                     'no_overwrite': True, 'require_jetson_failure': True,
                     'jetson_requirement_uses_explicit_fixtures': True,
                     'skip_temperature_read_sentinel_passed': True,
+                    'all_intake_temperature_guards': len(guards),
+                    'skip_temperature_requested': skip_temperature,
                     'skipped_required_conflict_rejected': True,
                     'metadata_conflict_precedes_fifo_missing_directory_reads': True,
                     'sigterm_status': cancelled['status'], 'sigterm_exitcode': 130,
@@ -218,9 +237,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--skip-temperature', action='store_true')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    verify(args.wheel, args.output)
+    verify(args.wheel, args.output, skip_temperature=args.skip_temperature)
     print('Installed intake checks passed')
 
 

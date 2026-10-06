@@ -20,7 +20,8 @@ class DeviceRegressionTests(unittest.TestCase):
                 archive.writestr('perfkit/'+path.name, path.read_bytes())
         self.args=Namespace(wheel=self.wheel, output=self.root/'output', preflight=False,
             ros_fixture=False, component_prefix=None, container_binary=None, sdk_prefix=None,
-            rmw=None, component_manager=[], domain_id=23, ros_python='python3', query_timeout=10)
+            rmw=None, component_manager=[], domain_id=23, ros_python='python3', query_timeout=10,
+            skip_temperature=False)
 
     def test_version_is_read_from_wheel_and_module_mismatch_is_rejected(self):
         self.assertEqual(driver.wheel_identity(self.wheel)['version'], '9.8.7')
@@ -51,6 +52,19 @@ class DeviceRegressionTests(unittest.TestCase):
         self.assertEqual(value['stages']['workload'],'passed')
         self.assertEqual(value['stages']['ros_preflight'],'running')
         self.assertIn('SDK unavailable',value['error'])
+
+    def test_temperature_request_reaches_every_installed_stage(self):
+        self.args.skip_temperature=True
+        self.args.preflight=self.args.ros_fixture=True
+        self.args.component_prefix=self.root
+        self.args.container_binary='controlled-container'
+        with patch.object(driver,'verify_intake') as intake, patch.object(driver,'verify_workload') as workload, \
+             patch.object(driver,'verify_ros') as ros, patch.object(driver,'run_ros_evidence',return_value={'source':{}}):
+            driver.run(self.args)
+        intake.assert_called_once_with(self.wheel,self.args.output/'intake',skip_temperature=True)
+        workload.assert_called_once_with(self.wheel,self.args.output/'workload',skip_temperature=True)
+        self.assertTrue(ros.call_args.kwargs['skip_temperature'])
+        self.assertTrue(json.loads((self.args.output/'device-regression-status.json').read_text())['skip_temperature'])
 
     def test_final_post_save_error_downgrades_status_and_preserves_error(self):
         write=Path.write_text; fired=[]; error=OSError('post-save')

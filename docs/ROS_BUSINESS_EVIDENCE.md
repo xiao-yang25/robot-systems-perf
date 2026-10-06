@@ -110,7 +110,7 @@ cmake -S tests/fixtures/ros_components -B results/m2b-component-build \
 cmake --build results/m2b-component-build -j2
 cmake --install results/m2b-component-build
 python3 tests/integration_ros_evidence.py \
-  --wheel /path/to/robot_systems_perf-0.7.1-py3-none-any.whl \
+  --wheel /path/to/robot_systems_perf-0.7.2-py3-none-any.whl \
   --component-prefix results/m2b-component-install \
   --container-binary /opt/ros/humble/lib/rclcpp_components/component_container \
   --ros-python /usr/bin/python3 --output results/m2b-integration-001

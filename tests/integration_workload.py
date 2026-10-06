@@ -20,6 +20,7 @@ if __package__ in (None, ''):
 
 from scripts.comparison_common import launch
 from tests.process_helpers import OwnedProcesses
+from tests.temperature_guard import guarded_command, assert_temperature_guard
 
 
 PROGRAM = """import ctypes,sys,threading,time
@@ -57,7 +58,7 @@ def latest(output):
     return {row['function_id']: row for row in records[-1]['functions']} if records else {}
 
 
-def verify(wheel, output):
+def verify(wheel, output, *, skip_temperature=False):
     owner = OwnedProcesses()
     with tempfile.TemporaryDirectory(prefix='m2a-install-') as temporary:
         root = Path(temporary)
@@ -98,7 +99,7 @@ def verify(wheel, output):
                  'ros_nodes': ['/fixture/control']}]}
         config = output / 'workload.local.json'
         config.write_text(json.dumps(workload, indent=2) + '\n')
-        logs = []
+        logs, guards = [], []
         def spawn(kind):
             process = launch(owner, [sys.executable, '-c', PROGRAM, names[kind], SECRET],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -109,6 +110,8 @@ def verify(wheel, output):
             args = ['--workload', str((workload_path or config).resolve()), '--profile', 'light', '--seconds', str(seconds),
                     '--interval', '.1', '--process-interval', '.1', '--system-interval', '.1',
                     '--discovery-interval', '.2', '--output', str(folder.resolve())]
+            if skip_temperature:
+                args.append('--skip-temperatures')
             command = [str(prefix / 'bin/robot-perf-monitor'), *args]
             if fail:
                 code = """import sys
@@ -156,6 +159,10 @@ sys.argv=['robot-perf-monitor',*sys.argv[2:]]
 monitor.main()
 """
                 command = [str(prefix / 'bin/python'), '-c', code, final_fault, *args]
+            if skip_temperature:
+                evidence = output / (folder.name + '-temperature-guard.json')
+                guards.append(evidence)
+                command = guarded_command(command, prefix / 'bin/python', evidence)
             log = (output / (folder.name + '.log')).open('x')
             logs.append(log)
             return launch(owner, command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -283,8 +290,11 @@ monitor.main()
             for folder in (capture, pid_capture, interrupted, interrupted_fault, failed, *final_fault_folders):
                 for path in folder.iterdir():
                     if path.is_file(): assert SECRET not in path.read_text(), path.name
+            for evidence in guards:
+                assert_temperature_guard(evidence)
             (output / 'verification.json').write_text(json.dumps({
                 'installed_version': expected_version, 'installed_module_hashes_match_wheel': True,
+                'skip_temperature_requested': skip_temperature, 'temperature_guard_count': len(guards),
                 'wheel_sha256': hashlib.sha256(wheel.read_bytes()).hexdigest(),
                 'shared_process_refs': True, 'ambiguity_and_restart': True,
                 'unrelated_process_not_collected': True, 'no_overwrite': True,
@@ -308,10 +318,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--skip-temperature', action='store_true')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
-    verify(args.wheel, args.output)
+    verify(args.wheel, args.output, skip_temperature=args.skip_temperature)
     print('Installed M2a integration passed')
 
 

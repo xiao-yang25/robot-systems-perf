@@ -51,7 +51,8 @@ def run(args):
     identity = wheel_identity(args.wheel)
     args.output.mkdir(parents=True, exist_ok=False)
     state = dict(identity, status='running', started_ns=time.monotonic_ns(), stages={},
-                 ros_fixture='not_requested', business_acceptance='not_evaluated')
+                 ros_fixture='not_requested', business_acceptance='not_evaluated',
+                 skip_temperature=args.skip_temperature)
     def save():
         (args.output/'device-regression-status.json').write_text(json.dumps(state, indent=2)+'\n')
     primary = None
@@ -60,7 +61,7 @@ def run(args):
         for name, check in (('intake', verify_intake), ('workload', verify_workload)):
             stage = args.output/name; stage.mkdir()
             state['stages'][name] = 'running'; save()
-            check(args.wheel, stage)
+            check(args.wheel, stage, skip_temperature=args.skip_temperature)
             state['stages'][name] = 'passed'; save()
         if args.preflight:
             state['stages']['ros_preflight'] = 'running'; save()
@@ -75,7 +76,8 @@ def run(args):
                 os.environ['RMW_IMPLEMENTATION'] = args.rmw
             stage = args.output/'ros-fixture'; stage.mkdir()
             state['stages']['ros_fixture'] = 'running'; save()
-            verify_ros(args.wheel, stage, args.component_prefix, args.container_binary, args.ros_python, sdk_prefix=args.sdk_prefix)
+            verify_ros(args.wheel, stage, args.component_prefix, args.container_binary, args.ros_python,
+                       sdk_prefix=args.sdk_prefix, skip_temperature=args.skip_temperature)
             state['stages']['ros_fixture'] = 'passed'; state['ros_fixture'] = 'passed'
         state['status'] = 'complete'
     except BaseException as error:
@@ -110,6 +112,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--skip-temperature', action='store_true',
+                        help='skip and guard temperature discovery/reads in every real capture, including cancellation')
     parser.add_argument('--preflight', action='store_true')
     parser.add_argument('--sdk-prefix', type=Path)
     parser.add_argument('--ros-python', default=sys.executable)

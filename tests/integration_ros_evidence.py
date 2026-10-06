@@ -74,7 +74,7 @@ def load_components(manager, namespace):
         rclpy.shutdown()
 
 
-def verify(wheel, output, component_prefix, container_binary, ros_python, *, sdk_prefix=None):
+def verify(wheel, output, component_prefix, container_binary, ros_python, *, sdk_prefix=None, skip_temperature=False):
     owner = OwnedProcesses()
     with tempfile.TemporaryDirectory(prefix='m2b-install-') as temporary:
         root = Path(temporary); prefix = root/'venv'; cwd = root/'unrelated'; cwd.mkdir()
@@ -122,8 +122,16 @@ def verify(wheel, output, component_prefix, container_binary, ros_python, *, sdk
                               for name, pid in [('first', container.pid), ('second', container.pid),
                                                 ('standalone', standalone.pid)]]}))
             capture = output/'monitor'
-            run([monitor_cli, '--workload', str(workload), '--profile', 'light', '--seconds', '3',
-                 '--interval', '.25', '--discovery-interval', '.5', '--output', str(capture)], 'monitor')
+            monitor_command = [monitor_cli, '--workload', str(workload), '--profile', 'light', '--seconds', '3',
+                 '--interval', '.25', '--discovery-interval', '.5', '--output', str(capture)]
+            if skip_temperature:
+                from tests.temperature_guard import guarded_command, assert_temperature_guard
+                evidence = output/'monitor-temperature-guard.json'
+                monitor_command = guarded_command([*monitor_command, '--skip-temperatures'],
+                                                   prefix/'bin/python', evidence)
+            run(monitor_command, 'monitor')
+            if skip_temperature:
+                assert_temperature_guard(evidence)
             source_hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in capture.iterdir() if p.is_file()}
             graph = output/'graph'
             command = [ros_cli, '--monitor-run', str(capture), '--graph', '--domain-id', '77', '--ros-python', ros_python,
@@ -248,6 +256,7 @@ print(json.dumps({'version':metadata.version('robot-systems-perf'),'hashes':{'pe
             actual = json.loads(modules.stdout)
             assert actual['version'] == expected_version and actual['hashes'] == hashes
             (output/'verification.json').write_text(json.dumps({'installed_version': expected_version,
+                'skip_temperature_requested': skip_temperature,
                 'installed_module_hashes_match_wheel': True, 'real_rclcpp_component_container': True,
                 'installed_preflight_ready': True, 'explicit_missing_rmw_failed': True,
                 'two_shared_components_and_independent_node': True, 'endpoint_qos': True,
@@ -273,8 +282,10 @@ def main():
     parser.add_argument('--container-binary', default='/opt/ros/humble/lib/rclcpp_components/component_container')
     parser.add_argument('--ros-python', default=sys.executable)
     parser.add_argument('--sdk-prefix', type=Path)
+    parser.add_argument('--skip-temperature', action='store_true')
     args = parser.parse_args(); args.output.mkdir(parents=True, exist_ok=False)
-    verify(args.wheel, args.output.resolve(), args.component_prefix, args.container_binary, args.ros_python, sdk_prefix=args.sdk_prefix)
+    verify(args.wheel, args.output.resolve(), args.component_prefix, args.container_binary, args.ros_python,
+           sdk_prefix=args.sdk_prefix, skip_temperature=args.skip_temperature)
 
 
 if __name__ == '__main__': main()

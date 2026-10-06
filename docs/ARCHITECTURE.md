@@ -117,3 +117,5 @@ ROS解释器通过同包内独立文件执行rclpy适配器，只创建自有观
 新monitor增加只读boot_id、PID namespace和monotonic上下文，旧记录缺项保持未知。规范化trace身份、时间、domain和历史引用必须一致；标外部导入身份一致性，不把所附digest当作已解码/认证原始CTF。没有真实tracing SDK不阻塞图路径，消息/回调/端到端指标延后M3。具体契约与验证见 [ROS对象关系证据](ROS_BUSINESS_EVIDENCE.md)。
 
 0.7.1环境预检复用同一有界query与终态路径，也不要求M2a输入。操作者先加载已有SDK环境；工具仅用sdk-prefix核对实际rclpy模块来源，再通过指定Python直接查询并核对显式RMW。SDK setup通常会启动前台子命令，工具内部source在超时后仅回收shell可能留下子孙进程；因此取消自动加载方案，避免为环境预检另建进程树管理器，也不修改全局SDK配置。现场包装器只exec选定Python，不加载setup。版本与模块一致性由wheel核对，不把源码预检冒称安装CLI执行。契约和矩阵见 [ROS环境指南](ROS_ENVIRONMENT.md)。
+
+0.7.2只在适配器返回observed/empty后核对环境来源，依赖、初始化或图查询失败保留首个原因；解释器路径在导入rclpy前记录。统一现场回归的温度跳过是显式选择，传到所有真实采集和取消路径，并以测试专用I/O哨兵验证。哨兵不进入产品wheel，不改变采样频率、身份或共享资源计量。

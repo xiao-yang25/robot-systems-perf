@@ -126,6 +126,7 @@ runpy.run_path(sys.argv[0],run_name='__main__')
         result = self.query(code, component_managers=['/container'])
         self.assertEqual(result['status'], 'unavailable')
         self.assertIn('rclpy unavailable', result['reason'])
+        self.assertEqual(result['source']['python_executable'], sys.executable)
         self.assertIsNone(result['components'][0]['nodes'])
 
     def test_real_timeout_kills_ignoring_child_and_reaps(self):

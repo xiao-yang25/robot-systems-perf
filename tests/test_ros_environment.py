@@ -65,6 +65,29 @@ class RosEnvironmentTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertIn('does not match', result['reason'])
 
+    def test_adapter_errors_survive_explicit_environment_checks_and_main(self):
+        sdk=self.root/'sdk'; sdk.mkdir()
+        for index,(status,reason) in enumerate((('unavailable','rclpy unavailable: controlled import failure'),
+                                               ('failed','RuntimeError: controlled initialization failure'))):
+            value=envelope(); value.update(status=status,reason=reason)
+            python=self.root/('failed-adapter-'+str(index))
+            python.write_text('#!'+sys.executable+'\nprint('+repr(json.dumps(value))+')\n'); python.chmod(0o755)
+            out=self.root/('failed-preflight-'+str(index))
+            with self.subTest(status=status), self.assertRaisesRegex(RuntimeError,reason):
+                run_ros_evidence(None,out,preflight=True,domain_id=23,ros_python=str(python),
+                                 wait_seconds=0,rmw='rmw_requested',sdk_prefix=sdk)
+            graph=json.loads((out/'graph-query.json').read_text())
+            self.assertEqual((graph['status'],graph['reason']),(status,reason))
+            self.assertEqual(json.loads((out/'ros-preflight.json').read_text())['reason'],reason)
+            self.assertEqual(json.loads((out/'ros-status.json').read_text())['status'],'failed')
+            self.assertEqual(json.loads((out/'ros-graph-query/stdout.bin').read_text())['reason'],reason)
+
+    def test_first_environment_mismatch_is_not_replaced(self):
+        sdk=self.root/'sdk'; sdk.mkdir()
+        out=self.root/'both-mismatch'; out.mkdir()
+        result=collect_graph(out,23,self.fake_python(),0,5,rmw='rmw_other',sdk_prefix=sdk)
+        self.assertEqual(result['reason'],'actual RMW does not match explicitly requested RMW')
+
     def test_sdk_prefix_checks_actual_module_without_loading_shell_code(self):
         sdk = self.root/'sdk prefix $(not-executed)'; sdk.mkdir()
         (sdk/'setup.bash').write_text('exit 4\n')

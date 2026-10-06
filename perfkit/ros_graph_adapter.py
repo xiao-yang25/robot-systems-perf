@@ -78,7 +78,8 @@ def snapshot(domain_id, wait_seconds, timeout_seconds, managers, deadline_ns=Non
     result = {'format_version': 1, 'kind': 'ros_graph_snapshot', 'status': 'unavailable',
         'reason': None, 'domain_id': domain_id, 'query_window': {'start_ns': start, 'end_ns': start},
         'source': {'adapter': 'rclpy', 'ros_distro': os.environ.get('ROS_DISTRO'),
-                   'rmw': None, 'python_version': platform.python_version()},
+                   'rmw': None, 'python_version': platform.python_version(),
+                   'python_executable': sys.executable},
         'nodes': [], 'topics': [], 'components': [], 'limitations': [
             'Visible ROS graph entities may belong to remote hosts.',
             'ROS graph names and endpoint GIDs do not establish a local PID mapping.',
@@ -96,7 +97,6 @@ def snapshot(domain_id, wait_seconds, timeout_seconds, managers, deadline_ns=Non
             result['components'] = [{'manager': manager, 'status': 'unavailable',
                 'reason': 'rclpy unavailable', 'nodes': None} for manager in managers]
             return result
-        result['source']['python_executable'] = sys.executable
         result['source']['rclpy_module'] = getattr(rclpy, '__file__', None)
         try:
             result['source']['rclpy_version'] = metadata.version('rclpy')

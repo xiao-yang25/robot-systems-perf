@@ -278,9 +278,9 @@ def collect_graph(output: Path, domain_id: int, python_executable: str,
     if failure:
         result['components'] = [{'manager': manager, 'status': 'failed',
                                  'reason': failure, 'nodes': None} for manager in component_managers]
-    if not failure and rmw is not None and result['source']['rmw'] != rmw:
+    if result['status'] in ('observed', 'empty') and rmw is not None and result['source']['rmw'] != rmw:
         result.update(status='failed', reason='actual RMW does not match explicitly requested RMW')
-    if not failure and sdk_prefix is not None:
+    if result['status'] in ('observed', 'empty') and sdk_prefix is not None:
         module = result['source'].get('rclpy_module')
         try:
             if not isinstance(module, str) or not Path(module).is_absolute():
