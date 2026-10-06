@@ -165,6 +165,35 @@ raise SystemExit(b.main())
             canceled=output/'canceled'
             run(canceled,130,injected.replace('TRIGGER',repr('running')).replace('ACTION','os.kill(os.getpid(),signal.SIGTERM)'))
             assert json.loads((canceled/'business-status.json').read_text())['status']=='interrupted'
+            mkdir_cancel_code='''import os,signal,sys
+from pathlib import Path
+from perfkit import business_events as b
+target=Path(sys.argv[-1])
+original=Path.mkdir
+def mkdir(path,*args,**kwargs):
+ result=original(path,*args,**kwargs)
+ if path==target: os.kill(os.getpid(),signal.SIGTERM)
+ return result
+Path.mkdir=mkdir
+sys.argv=['robot-perf-business',*sys.argv[1:]]
+raise SystemExit(b.main())
+'''
+            mkdir_canceled=output/'mkdir-canceled'; run(mkdir_canceled,130,mkdir_cancel_code)
+            mkdir_status=json.loads((mkdir_canceled/'business-status.json').read_text())
+            assert mkdir_status['status']=='interrupted' and mkdir_status['finished_ns'] is not None
+            assert not (mkdir_canceled/'business-summary.json').exists()
+            initial_fault=output/'initial-state-fault'
+            run(initial_fault,1,injected.replace('TRIGGER',repr('running')).replace('ACTION',"raise OSError('controlled initial write fault')"))
+            initial_status=json.loads((initial_fault/'business-status.json').read_text())
+            assert initial_status['status']=='failed' and initial_status['error']=='controlled initial write fault'
+            old_summary=(invalid_monitor/'monitor-summary.json')
+            for field in ('pid','starttime_ticks'):
+                invalid_identity=json.loads(files['monitor-summary.json'])
+                for entity in invalid_identity['resources']['registered_entities'].values():
+                    if entity['kind']=='process': entity[field]=float(entity[field])
+                old_summary.write_text(json.dumps(invalid_identity))
+                rejected_identity=output/('bad-identity-'+field)
+                run(rejected_identity,1,monitor_run=invalid_monitor); assert not rejected_identity.exists()
             failed=output/'final-fault'
             run(failed,1,injected.replace('TRIGGER',repr('complete')).replace('ACTION',"raise OSError('controlled final write fault')"))
             assert json.loads((failed/'business-status.json').read_text())['status']=='failed'
@@ -180,6 +209,8 @@ raise SystemExit(b.main())
                 'module_hashes_match':True,'real_fixture_timestamps':True,'production_business_test':False,
                 'temperature_accesses':0,'source_unchanged':True,'shared_resource_reference':True,
                 'invalid_context_text_number_rejected_before_output':True,
+                'mkdir_sigterm_interrupted':True,'initial_state_fault_failed':True,
+                'float_process_identity_rejected_before_output':True,
                 'sigterm_exitcode':130,'final_fault_status':'failed','external_fixtures_alive_before_cleanup':True},indent=2)+'\n')
     finally:
         owner.cleanup()

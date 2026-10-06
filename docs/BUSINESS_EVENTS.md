@@ -2,6 +2,8 @@
 
 0.8.0新增 `robot-perf-business`，离线读取M2a资源窗口、业务链声明、输入输出事件和原始来源，关联样本并输出E2E分位数、吞吐、结果分类及选填deadline观察。仅用Python标准库，不依赖ROS SDK；不改已有采样器、不控制外部进程。当前阶段是通用接入接口，不代表已确认现场功能、接通真实CTF或完成业务验收。
 
+0.8.1修补mkdir成功后的取消留证空隙：在try内部延期中断，依次创建新目录、标记所有权、保存初始状态，随后处理挂起中断并落盘interrupted。mkdir失败不获得目录所有权，也不向已有结果写终态；首条状态写失败保留原错误并尝试failed终态。源工作清单引用的现有process实体，PID/starttime必须是1..2^63−1整数，拒绝bool、浮点、字符串及负数/越界，并核对引用中的身份；可选registration_id存在时也须为匹配的正整数。缺失资源仍保持unresolved，不改旧入口兼容行为。
+
 ## 总体路径与范围
 
 先选一个真实功能路径，现场确认部署版本、输入/输出节点和样本ID。用原monitor入口观察相应进程，同时通过已有日志/事件导出，必要时增加最小埋点。导出器生成下述格式；导入核对同机时钟和资源身份，输出每个事件和每个样本的判定，再做稳定输入下的无采集/采集对照。
@@ -99,10 +101,12 @@ deadline按该成熟队列统计没有在期限内有效输出的样本；等于
 
 ```bash
 python3 tests/integration_business_events.py \
-  --wheel /path/to/robot_systems_perf-0.8.0-py3-none-any.whl \
+  --wheel /path/to/robot_systems_perf-0.8.1-py3-none-any.whl \
   --output /path/to/new-m3a-integration
 ```
 
 此脚本使用测试自有进程的真实单调时间，synthetic=true，不代表真实算法验证；采集固定5秒并显式跳过温度，覆盖共享引用、原始记录复算、防覆盖、错误摘要、实际取消和自有对象回收。缺离线pip时按[离线安装指南](MACHINE_INTAKE.md)准备，不下载或安装SDK。相关单测为tests.test_business_events、tests.test_ros_evidence、tests.test_workload、tests.test_acceptance。
+
+0.8.0安装与离线导入已有三机有限通过反馈，可以收尾。0.8.1仅需相关单测及一台Linux的上述安装集成，额外核对mkdir后SIGTERM130/interrupted、首次状态故障failed、错误源身份在创建前拒绝及旧目录逐字节不变；无需三机全套或再次比较夹具性能。
 
 安装功能通过后收尾该增量；待现场确认一条路径再做一个固定业务窗口，核对独立输入清单、原始事件、身份/窗口、未完成分母及deadline。失败保留目录与具体缺口，不以增加次数直到通过为验收。Thor真实SDK与CTF是其他有限工作，不能以本次JSON导入替代。

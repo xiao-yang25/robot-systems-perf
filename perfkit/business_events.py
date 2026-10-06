@@ -76,7 +76,26 @@ def load_monitor(directory):
     context = monitor['environment'].get('observation_context')
     if context is not None and not isinstance(context, dict):
         raise ValueError('monitor observation_context must be an object or null')
+    for role in monitor['summary']['workload']['functions']:
+        for ref in role['resource_refs']:
+            entity = monitor['entities'].get(ref)
+            # Missing/non-process records remain unresolved, as in M3a. A
+            # present process record must not bind via numeric coercion.
+            if entity is not None and entity.get('kind') == 'process' and not _reference_matches(ref, entity):
+                raise ValueError('monitor process identity type/range/reference inconsistent')
     return monitor
+
+
+def _reference_matches(ref, entity):
+    if not _int(entity.get('pid'), 1) or not _int(entity.get('starttime_ticks'), 1):
+        return False
+    match = re.fullmatch(r'pid=([1-9][0-9]*):registration=([1-9][0-9]*):start=([0-9]+)', ref)
+    if not match or len(match[2]) > 19 or not _int(int(match[2]), 1):
+        return False
+    registration = entity.get('registration_id')
+    if 'registration_id' in entity and (not _int(registration, 1) or str(registration) != match[2]):
+        return False
+    return match[1] == str(entity['pid']) and match[3] == str(entity['starttime_ticks'])
 
 
 def _fields(value, fields, name):
@@ -193,8 +212,7 @@ def analyze(monitor, chain, export):
                 entity = monitor['entities'].get(ref) or {}
                 if (entity.get('kind') == 'process' and entity.get('pid') == event['pid'] and
                         entity.get('starttime_ticks') == event['starttime_ticks'] and
-                        ref.split(':')[0] == 'pid='+str(event['pid']) and
-                        ref.endswith(':start='+str(event['starttime_ticks'])) and
+                        _reference_matches(ref, entity) and
                         observed['first_observed_ns'] <= event['monotonic_ns'] <= observed['last_observed_ns']):
                     refs.append(ref)
             if len(refs) != 1:
@@ -292,11 +310,14 @@ def run_business_events(monitor_run, chain_file, events_file, raw_source, output
     raw = _raw_source(raw_source)
     if hashlib.sha256(raw).hexdigest() != export['source']['raw_sha256']:
         raise ValueError('raw source SHA256 mismatch')
-    output.mkdir(parents=True, exist_ok=False)
     status = {'status': 'running', 'error': None, 'error_type': None, 'started_ns': time.monotonic_ns()}
     primary = None
+    owns_output = False
     try:
-        _json(output/'business-status.json', status)
+        with defer_interrupts():
+            output.mkdir(parents=True, exist_ok=False)
+            owns_output = True
+            _json(output/'business-status.json', status)
         for name, data in (('chain.json', chain_raw), ('events.json', events_raw), ('raw-source.bin', raw)):
             (output/name).write_bytes(data)
         _json(output/'business-inputs.json', {'tool': _source_record(), 'monitor_source_hashes': monitor['source_hashes'],
@@ -315,22 +336,25 @@ def run_business_events(monitor_run, chain_file, events_file, raw_source, output
                       error=str(error), error_type=type(error).__name__)
         raise
     finally:
-        status['finished_ns'] = time.monotonic_ns()
-        try:
-            with defer_interrupts(): _json(output/'business-status.json', status)
-        except BaseException as cleanup:
-            unhandled = primary is None
-            if unhandled:
-                status.update(status='interrupted' if isinstance(cleanup, KeyboardInterrupt) else 'failed',
-                              error=str(cleanup), error_type=type(cleanup).__name__)
-            else:
-                status.setdefault('cleanup_errors', []).append({'stage': 'final_status_write',
-                    'error_type': type(cleanup).__name__, 'error': str(cleanup)})
+        # A failed mkdir never grants ownership, including an existing result.
+        if owns_output:
             try:
-                with defer_interrupts(): _json(output/'business-status.json', status)
-            except BaseException:
-                pass  # Secondary failure cannot replace the original exception/interrupt.
-            if unhandled: raise
+                with defer_interrupts():
+                    status['finished_ns'] = time.monotonic_ns()
+                    _json(output/'business-status.json', status)
+            except BaseException as cleanup:
+                unhandled = primary is None
+                if unhandled:
+                    status.update(status='interrupted' if isinstance(cleanup, KeyboardInterrupt) else 'failed',
+                                  error=str(cleanup), error_type=type(cleanup).__name__)
+                else:
+                    status.setdefault('cleanup_errors', []).append({'stage': 'final_status_write',
+                        'error_type': type(cleanup).__name__, 'error': str(cleanup)})
+                try:
+                    with defer_interrupts(): _json(output/'business-status.json', status)
+                except BaseException:
+                    pass  # Secondary failure cannot replace the original exception/interrupt.
+                if unhandled: raise
 
 
 def main():

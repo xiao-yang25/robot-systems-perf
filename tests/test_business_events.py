@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import os
+import signal
 from pathlib import Path
 import tempfile
 import unittest
@@ -251,3 +252,55 @@ class BusinessEventTests(unittest.TestCase):
         with patch.object(b,'_json',side_effect=fault),self.assertRaises(OSError): self.import_files()
         status=json.loads((self.root/'import/business-status.json').read_text())
         self.assertEqual(status['status'],'failed'); self.assertEqual(status['error'],'post-complete write fault')
+
+    def test_sigterm_immediately_after_mkdir_retains_interrupted_status(self):
+        output=self.root/'mkdir-cancel'; mkdir=Path.mkdir
+        def terminate(signum,frame): raise KeyboardInterrupt('controlled SIGTERM after mkdir')
+        old=signal.signal(signal.SIGTERM,terminate)
+        def cancel(path,*args,**kwargs):
+            result=mkdir(path,*args,**kwargs)
+            if path==output: os.kill(os.getpid(),signal.SIGTERM)
+            return result
+        try:
+            with patch.object(Path,'mkdir',cancel),self.assertRaises(KeyboardInterrupt): self.import_files(output)
+        finally:
+            signal.signal(signal.SIGTERM,old)
+        status=json.loads((output/'business-status.json').read_text())
+        self.assertEqual(status['status'],'interrupted'); self.assertIsNotNone(status['finished_ns'])
+
+    def test_source_process_identity_requires_integer_types_and_matching_reference(self):
+        path=self.root/'monitor/monitor-summary.json'; original=path.read_bytes()
+        for key,values in (('pid',(True,123.0,-1,0,2**63,'123')),('starttime_ticks',(True,50.0,-1,0,2**63,'50')),
+                           ('registration_id',(True,1.0,-1,0,2**63,2))):
+            for index,value in enumerate(values):
+                summary=json.loads(original); summary['resources']['registered_entities'][REF][key]=value
+                path.write_text(json.dumps(summary))
+                output=self.root/('reject-'+key+'-'+str(index))
+                with self.subTest(key=key,value=value):
+                    with self.assertRaises(ValueError): self.import_files(output)
+                    self.assertFalse(output.exists())
+        path.write_bytes(original)
+        entity=self.monitor['entities'][REF]; entity['pid']=123.0
+        self.assertEqual(self.analyze()[0]['counts']['unresolved'],1)
+
+    def test_mkdir_failure_preserves_existing_directory_and_original_error(self):
+        output=self.root/'existing'; output.mkdir(); (output/'business-status.json').write_bytes(b'original status')
+        before={p.name:p.read_bytes() for p in output.iterdir()}
+        with patch.object(b,'_json',side_effect=AssertionError('must not write existing directory')):
+            with self.assertRaises(FileExistsError): self.import_files(output)
+        self.assertEqual(before,{p.name:p.read_bytes() for p in output.iterdir()})
+        error=OSError('controlled mkdir failure')
+        with patch.object(Path,'mkdir',side_effect=error),self.assertRaises(OSError) as caught:
+            self.import_files(self.root/'mkdir-failed')
+        self.assertIs(caught.exception,error); self.assertFalse((self.root/'mkdir-failed').exists())
+
+    def test_initial_status_write_failure_saves_failed_state_without_replacing_original(self):
+        error=OSError('controlled initial state failure'); write=b._json; sent=[]
+        def fail(path,value):
+            if path.name=='business-status.json' and value['status']=='running' and not sent:
+                sent.append(True); raise error
+            return write(path,value)
+        with patch.object(b,'_json',side_effect=fail),self.assertRaises(OSError) as caught: self.import_files()
+        self.assertIs(caught.exception,error)
+        state=json.loads((self.root/'import/business-status.json').read_text())
+        self.assertEqual(state['status'],'failed'); self.assertEqual(state['error'],str(error))
