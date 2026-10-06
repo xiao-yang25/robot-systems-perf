@@ -166,6 +166,25 @@ def write_monitor_report(output, summary):
         write_business_report(output, summary)
 
 
+def _observation_context(proc_root):
+    """Identity/time domain for later imports; absent facts never become claims."""
+    reasons = {}
+    try:
+        boot_id = (proc_root / 'sys/kernel/random/boot_id').read_text().strip()
+        if not re.fullmatch(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}', boot_id):
+            raise ValueError('invalid boot identifier')
+    except (OSError, ValueError) as error:
+        boot_id = None
+        reasons['boot_id'] = type(error).__name__
+    try:
+        namespace = os.readlink(proc_root / 'self/ns/pid')
+    except OSError as error:
+        namespace = None
+        reasons['pid_namespace'] = type(error).__name__
+    return {'boot_id': boot_id, 'pid_namespace': namespace,
+            'clock': 'linux_monotonic', 'missing_reasons': reasons}
+
+
 def _cleanup_error(status, stage, error):
     status.setdefault('cleanup_errors', []).append(
         {'stage': stage, 'error_type': type(error).__name__, 'error': str(error)})
@@ -221,7 +240,7 @@ def run_monitor(config, output, proc_root=Path('/proc'), *, workload=None):
         profile = collect_profile(**profile_kwargs)
         namespace = os.readlink(proc_root / 'self/ns/pid') if (proc_root / 'self/ns/pid').exists() else None
         _json(output / 'environment.json', {'host_profile': profile, 'source': _source_record(),
-              'pid_namespace': namespace,
+              'pid_namespace': namespace, 'observation_context': _observation_context(proc_root),
               'observer_pid': os.getpid(), 'observer_uid': os.getuid(), 'limits': LIMITS})
         if config['require_jetson'] and not profile['checks']['jetson_detected']:
             raise RuntimeError('Expected native Linux ARM64 Jetson; inspect environment.json')

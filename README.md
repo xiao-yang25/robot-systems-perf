@@ -105,7 +105,18 @@ robot-perf-monitor --profile light --require-jetson --include-name '^component_c
 
 0.6.1 提前拒绝 metadata 读取前的参数冲突，纯 PID 清单只读取 PID 并集内的进程详情，并补齐异常窗口结束记录、保留原始错误。现场开销收益和业务扰动需按指南的有限对照分别验证。
 
-0.6.2 修补最终状态落盘中断叠加摘要/报告写入失败，独立保存 interrupted 状态和错误记录。0.6.1 的纯PID四轮对照已有现场反馈，业务扰动仍未评估；本增量只需两项受控故障复核，见 [最终状态复核](docs/BUSINESS_MAPPING.md#062-最终状态有限复核)。
+0.6.2 修补最终状态落盘中断叠加摘要/报告写入失败，独立保存 interrupted 状态和错误记录。0.6.1 的纯PID四轮对照已有现场反馈，业务扰动仍未评估；0.6.2两个受控故障已有三机通过反馈并收尾，见 [最终状态复核](docs/BUSINESS_MAPPING.md#062-最终状态有限复核)。
+
+## ROS 对象关系证据（M2b）
+
+0.7.0 增加独立只读入口，明确查询指定domain的ROS图与组件，关联已结束的M2a记录：
+
+```bash
+robot-perf-ros --monitor-run results/business-001 --graph --domain-id 0 \
+  --ros-python /usr/bin/python3 --output results/ros-evidence-001
+```
+
+核心不增加ROS依赖，图查询使用已有SDK对应的rclpy解释器。图可见不等于本地PID归属；可选导入规范化节点初始化元数据，仅标外部证据身份一致性。原生CTF/真实追踪SDK、消息链路时延和deadline尚未完成。执行方式、未知QoS、证据层次与一次设备复核见 [M2b指南](docs/ROS_BUSINESS_EVIDENCE.md)。
 
 ## 结果与检查
 

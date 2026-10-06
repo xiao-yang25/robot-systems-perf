@@ -36,6 +36,7 @@ flowchart TD
 | `discovery.py` | 当前用户、活动阈值、名称/PID、排除项、cgroup 与数量限制 | 活跃候选不等于算法识别；组件容器的一个PID不等于一个节点 |
 | `monitor.py` | 定期发现、注册/注销、发现成本与报告 | 没发现目标不等于没有业务 |
 | `workload.py` | M2a 功能声明校验、逐功能硬范围匹配、身份关系与资源引用；复用 monitor 生命周期 | 声明不证明节点/算法归属；共享进程资源不按节点均分；不提供业务路径时延 |
+| `ros_evidence.py` / `ros_graph.py` / `ros_graph_adapter.py` | M2b独立入口：只读已结束M2a、显式图/组件查询、有界自有子进程、规范化初始化元数据导入与资源引用 | 图无本地PID；导入身份一致性不认证原始trace；不计算业务时延或按节点分配资源 |
 | `resources.py` | 单采样线程、独立采样周期、线程选择、计数增量与成本分析 | 累计等待不等于单次调度原因；采样峰值不等于真实峰值 |
 | `jetson.py` | 可选 tegrastats、原始接收记录、格式解析与陈旧判断 | EMC 活动百分比不等于 GB/s；GPU利用率不等于推理耗时 |
 | `runner.py` / `suite.py` | C01/S01 合成基线、重复实验、ABBA 开销对照 | 合成负载不等于真实机器人端到端链路 |
@@ -106,3 +107,11 @@ C01通过 `runtime_evidence.hpp` 在循环外保存自身maps及启动实际RMW/
 `EP_BUILD_ROS=OFF` 只构建独立Linux周期任务；native入口先检查展开后的场景，含C01才加载ROS并构建通信程序。runner只要求实际用到的二进制，S01不要求遗留的ros_bench。新运行的environment记录所用二进制SHA256；直接Python入口没有外部host档案时，在启动时采集当前进程可见的平台视图，并标明来源。容器内的此视图不能冒充容器外宿主档案；已有日志不补写。
 
 测试进程的生命周期与业务monitor分离：测试仅认领自己创建的根进程和经过完整亲缘/身份/角色验证的后代。Linux集成辅助器使用pidfd发信号、固定proc目录描述符读取已验证角色的参数，不依赖可选的 `/proc/.../children`。创建fixture前要求默认SIGCHLD，拒绝继承的忽略或自定义处理器；在CPython/Linux主线程重新安装默认处理器清除自动回收标志。根注册必须紧随Popen且没有并发poll/wait、其他reaper或信号处理变化；[pidfd创建者身份保证的前提](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)需始终满足。部分初始化失败保留创建者回收责任，发现明确身份变化则不向该pidfd发信号。无法安全回收时测试失败，不使用裸PID或进程组回退。该辅助器仅用于测试，monitor始终不认领或发送信号给外部业务。
+
+## M2b 的独立证据路径
+
+`robot-perf-ros`读取已结束M2a的权威状态、清单、资源引用和文件摘要，再明确查询图或导入规范化节点初始化元数据，在新目录保存分层证据。图查询通常在monitor窗口之后，记录独立时间窗口，不放进高频发现循环、不计入旧monitor的开销预算。选择独立入口使ROS SDK及图查询失败不改变基础采样依赖；相较直接嵌入monitor循环，牺牲同期持续图覆盖，保留以后显式同窗适配的边界。
+
+ROS解释器通过同包内独立文件执行rclpy适配器，只创建自有观察节点；节点/端点API及显式ListNodes查询不会修改业务。自有query子进程有4MiB合计输出限制和全局超时，取消后有界回收；外部业务不归工具所有。重复节点、空图、部分失败、权限/SDK缺失分别留证，不能提升为本地PID确认。
+
+新monitor增加只读boot_id、PID namespace和monotonic上下文，旧记录缺项保持未知。规范化trace身份、时间、domain和历史引用必须一致；标外部导入身份一致性，不把所附digest当作已解码/认证原始CTF。没有真实tracing SDK不阻塞图路径，消息/回调/端到端指标延后M3。具体契约与验证见 [ROS对象关系证据](ROS_BUSINESS_EVIDENCE.md)。
