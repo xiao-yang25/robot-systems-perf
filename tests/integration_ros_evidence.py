@@ -8,6 +8,7 @@ from email.parser import Parser
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -23,6 +24,7 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.comparison_common import launch
 from tests.process_helpers import OwnedProcesses
+from perfkit.lifecycle import defer_interrupts
 
 
 NODE_PROGRAM = '''import rclpy,sys
@@ -33,23 +35,149 @@ finally: node.destroy_node(); rclpy.shutdown()
 '''
 
 
+def _verify_qos(qos, role):
+    assert qos['reliability']['name'] == 'RELIABLE', (role, qos)
+    assert type(qos['reported_depth']) is int and qos['reported_depth'] >= 0
+    if qos['history']['name'] == 'UNKNOWN':
+        assert qos['depth'] is None
+        assert qos['depth_reason'] == 'RMW graph does not expose queue depth'
+    else:
+        assert qos['history']['name'] == 'KEEP_LAST', 'fixture configures KEEP_LAST'
+        assert type(qos['depth']) is int and qos['depth'] == qos['reported_depth']
+        assert qos['depth_reason'] is None
+        assert qos['depth'] == 3, 'fixture configures KEEP_LAST depth 3'
+
+
 def verify_endpoint_qos(topic):
     """Fixture reliability is known; graph queue-depth availability is RMW-specific."""
     for role in ('publishers', 'subscriptions'):
         assert len(topic[role]) == 2, role
         for endpoint in topic[role]:
-            qos = endpoint['qos']
-            assert qos['reliability']['name'] == 'RELIABLE', (role, qos)
-            assert type(qos['reported_depth']) is int and qos['reported_depth'] >= 0
-            if qos['history']['name'] == 'UNKNOWN':
-                assert qos['depth'] is None
-                assert qos['depth_reason'] == 'RMW graph does not expose queue depth'
-            else:
-                assert qos['history']['name'] == 'KEEP_LAST', 'fixture configures KEEP_LAST'
-                assert type(qos['depth']) is int and qos['depth'] == qos['reported_depth']
-                assert qos['depth_reason'] is None
-                if qos['history']['name'] == 'KEEP_LAST':
-                    assert qos['depth'] == 3, 'fixture configures KEEP_LAST depth 3'
+            _verify_qos(endpoint['qos'], role)
+
+
+def fixture_graph_diagnostics(snapshot, namespace, manager, *, duplicate=False):
+    """One snapshot must satisfy the contract; never combine partial snapshots."""
+    expected_names = {namespace+'/'+name: (2 if duplicate and name == 'first' else 1)
+                      for name in ('first', 'second', 'standalone')}
+    names = [node['full_name'] for node in snapshot['nodes']]
+    data_topics = [topic for topic in snapshot['topics'] if topic['name'] == namespace+'/data']
+    components = [row for row in snapshot['components'] if row['manager'] == manager]
+    expected_components = sorted([namespace+'/first', namespace+'/second'])
+    actual_components = sorted(node['full_name'] for row in components for node in (row['nodes'] or []))
+    incomplete, invalid = [], []
+    if snapshot['status'] not in ('observed', 'empty'):
+        invalid.append('query status: '+snapshot['status']+': '+str(snapshot.get('reason')))
+    for name, count in expected_names.items():
+        observed = names.count(name)
+        if observed < count: incomplete.append('missing node occurrences: '+name)
+        if observed > count: invalid.append('unexpected duplicate node: '+name)
+    if not components:
+        incomplete.append('component manager missing')
+    elif len(components) != 1 or components[0]['status'] != 'observed':
+        invalid.append('component query not observed exactly once')
+    elif actual_components != expected_components:
+        if len(actual_components) == len(set(actual_components)) and set(actual_components) < set(expected_components):
+            incomplete.append('component list incomplete')
+        else:
+            invalid.append('unexpected component list')
+    if not data_topics:
+        incomplete.append('data topic missing')
+    elif len(data_topics) != 1:
+        invalid.append('duplicate data topic')
+    else:
+        topic = data_topics[0]
+        for role in ('publishers', 'subscriptions'):
+            endpoints = topic[role]
+            if endpoints is None:
+                invalid.append('endpoint query unavailable: '+role)
+                continue
+            endpoint_names = sorted(endpoint['full_name'] for endpoint in endpoints)
+            for endpoint in endpoints:
+                try:
+                    _verify_qos(endpoint['qos'], role)
+                except AssertionError as error:
+                    invalid.append('QoS mismatch ('+role+'): '+str(error))
+            if endpoint_names != expected_components:
+                if len(endpoint_names) == len(set(endpoint_names)) and set(endpoint_names) < set(expected_components):
+                    incomplete.append('endpoints incomplete: '+role)
+                else:
+                    invalid.append('unexpected endpoints: '+role)
+    return {'ready': not incomplete and not invalid, 'incomplete': incomplete, 'invalid': invalid,
+            'expected': {'node_occurrences': expected_names, 'component_nodes': expected_components,
+                         'data_topic': namespace+'/data', 'endpoint_nodes_per_role': expected_components,
+                         'qos': {'reliability': 'RELIABLE', 'known_history': 'KEEP_LAST', 'known_depth': 3}},
+            'actual': {'status': snapshot['status'], 'reason': snapshot.get('reason'),
+                       'node_names': names, 'components': snapshot['components'], 'data_topics': data_topics},
+            'query_window': snapshot['query_window'],
+            'host_window': snapshot.get('query_evidence', {}).get('host_window')}
+
+
+def wait_for_fixture_graph(query, output, namespace, manager, *, name='graph', duplicate=False,
+                           max_attempts=3, timeout_seconds=20, clock=time.monotonic):
+    """Retry only successful-but-incomplete fixture observations within one budget.
+
+    query(folder, budget) must bound and reap its child. The caller supplies the
+    installed CLI; its separate exit/cleanup grace is not a readiness extension.
+    """
+    if (type(max_attempts) is not int or not 1 <= max_attempts <= 3 or
+            type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or
+            not 2 < timeout_seconds <= 20):
+        raise ValueError('fixture requires 1..3 attempts and a finite total budget in (2,20] seconds')
+    started = clock(); deadline = started + timeout_seconds
+    report = output / (name+'-readiness.json')
+    state = {'status': 'running', 'max_attempts': max_attempts, 'budget_seconds': timeout_seconds,
+             'started_monotonic': started, 'attempts': [], 'selected_output': None}
+    with report.open('x') as stream:
+        json.dump(state, stream, indent=2); stream.write('\n')
+    def save():
+        with defer_interrupts():
+            report.write_text(json.dumps(state, indent=2)+'\n')
+    try:
+        for index in range(1, max_attempts+1):
+            remaining = deadline-clock()
+            if remaining <= 2:
+                raise AssertionError('fixture readiness budget has insufficient time for graph-wait=2')
+            folder = output / (name if index == 1 else name+'-'+str(index).zfill(3))
+            attempt = {'index': index, 'output': folder.name, 'query_budget_seconds': min(10, remaining),
+                       'status': 'querying'}
+            state['attempts'].append(attempt); save()
+            # Record I/O consumes the same phase budget; do not launch using
+            # the stale allowance calculated before saving the attempt.
+            remaining = deadline-clock()
+            if remaining <= 2:
+                attempt['status'] = 'not_started'
+                raise AssertionError('fixture readiness budget exhausted before query launch')
+            attempt['query_budget_seconds'] = min(10, remaining)
+            snapshot = query(folder, attempt['query_budget_seconds'])
+            diagnostic = fixture_graph_diagnostics(snapshot, namespace, manager, duplicate=duplicate)
+            attempt.update(status='ready' if diagnostic['ready'] else 'incomplete', diagnostic=diagnostic)
+            if diagnostic['invalid']:
+                attempt['status'] = 'invalid'
+                raise AssertionError('invalid fixture graph: '+json.dumps(diagnostic, sort_keys=True))
+            attempt['evaluated_monotonic'] = clock()
+            if attempt['evaluated_monotonic'] >= deadline:
+                attempt['status'] = 'late'
+                raise AssertionError('fixture readiness deadline exceeded: '+json.dumps(diagnostic, sort_keys=True))
+            save()
+            if diagnostic['ready']:
+                state.update(status='ready', selected_output=folder.name, finished_monotonic=clock(),
+                             recovered_incomplete=index > 1)
+                save()
+                return folder, snapshot
+        raise AssertionError('fixture graph incomplete after bounded attempts: '+
+                             json.dumps(state['attempts'][-1]['diagnostic'], sort_keys=True))
+    except BaseException as error:
+        state.update(status='interrupted' if isinstance(error, KeyboardInterrupt) else 'failed',
+                     finished_monotonic=clock(), error_type=type(error).__name__, error=str(error))
+        if state['attempts'] and state['attempts'][-1]['status'] == 'querying':
+            state['attempts'][-1].update(status='query_failed', error_type=type(error).__name__, error=str(error))
+        try:
+            save()
+        except BaseException as cleanup:
+            if hasattr(error, 'add_note'):
+                error.add_note('fixture readiness record write failed: '+repr(cleanup))
+        raise
 
 
 def load_components(manager, namespace):
@@ -102,9 +230,11 @@ def verify(wheel, output, component_prefix, container_binary, ros_python, *, sdk
         def start(command, name):
             log = (output/(name+'.log')).open('x'); logs.append(log)
             return launch(owner, command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
-        def run(command, name, expected=0):
+        def run(command, name, expected=0, *, timeout_seconds=20):
             process = start(command, name)
-            assert process.wait(timeout=20) == expected, name
+            actual = process.wait(timeout=timeout_seconds)
+            assert actual == expected, {'stage': name, 'expected_exit': expected,
+                                        'actual_exit': actual, 'log': name+'.log'}
             assert not Path('/proc', str(process.pid)).exists()
             return process
         namespace = '/perfkit_fixture_' + uuid.uuid4().hex
@@ -133,16 +263,13 @@ def verify(wheel, output, component_prefix, container_binary, ros_python, *, sdk
             if skip_temperature:
                 assert_temperature_guard(evidence)
             source_hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in capture.iterdir() if p.is_file()}
-            graph = output/'graph'
             command = [ros_cli, '--monitor-run', str(capture), '--graph', '--domain-id', '77', '--ros-python', ros_python,
-                       '--component-manager', manager, '--graph-wait', '2', '--query-timeout', '10']
-            run([*command, '--output', str(graph)], 'graph')
-            snapshot = json.loads((graph/'graph-query.json').read_text())
-            assert snapshot['status'] == 'observed', snapshot
-            names = [node['full_name'] for node in snapshot['nodes']]
-            for name in ('first', 'second', 'standalone'): assert names.count(namespace+'/'+name) == 1
-            assert sorted(n['full_name'] for n in snapshot['components'][0]['nodes']) == [
-                namespace+'/first', namespace+'/second']
+                       '--component-manager', manager, '--graph-wait', '2']
+            def query_fixture(folder, budget):
+                run([*command, '--query-timeout', str(budget), '--output', str(folder)], folder.name,
+                    timeout_seconds=budget+2)
+                return json.loads((folder/'graph-query.json').read_text())
+            graph, snapshot = wait_for_fixture_graph(query_fixture, output, namespace, manager)
             topic = next(t for t in snapshot['topics'] if t['name'] == namespace+'/data')
             assert len(topic['publishers']) == len(topic['subscriptions']) == 2
             verify_endpoint_qos(topic)
@@ -168,8 +295,8 @@ def verify(wheel, output, component_prefix, container_binary, ros_python, *, sdk
             first, second, single = summary['workload']['functions']
             assert first['resource_refs'] == second['resource_refs'] and first['resource_refs'] != single['resource_refs']
             duplicate = start([ros_python, '-c', NODE_PROGRAM, 'first', namespace], 'duplicate-node')
-            duplicate_graph = output/'duplicate'
-            run([*command, '--output', str(duplicate_graph)], 'duplicate-graph')
+            duplicate_graph, _ = wait_for_fixture_graph(query_fixture, output, namespace, manager,
+                                                       name='duplicate', duplicate=True)
             duplicate_relations = json.loads((duplicate_graph/'ros-relations.json').read_text())
             assert duplicate_relations['functions'][0]['nodes'][0]['graph']['status'] == 'ambiguous'
             # Synthetic normalized metadata tests installed import boundaries,
@@ -259,6 +386,8 @@ print(json.dumps({'version':metadata.version('robot-systems-perf'),'hashes':{'pe
                 'skip_temperature_requested': skip_temperature,
                 'installed_module_hashes_match_wheel': True, 'real_rclcpp_component_container': True,
                 'installed_preflight_ready': True, 'explicit_missing_rmw_failed': True,
+                'fixture_readiness': json.loads((output/'graph-readiness.json').read_text()),
+                'duplicate_readiness': json.loads((output/'duplicate-readiness.json').read_text()),
                 'two_shared_components_and_independent_node': True, 'endpoint_qos': True,
                 'runtime': snapshot['source'],
                 'endpoint_history': {role: [p['qos']['history']['name'] for p in topic[role]]

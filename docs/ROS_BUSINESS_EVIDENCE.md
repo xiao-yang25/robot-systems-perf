@@ -113,11 +113,13 @@ python3 tests/integration_ros_evidence.py \
   --wheel /path/to/robot_systems_perf-0.7.2-py3-none-any.whl \
   --component-prefix results/m2b-component-install \
   --container-binary /opt/ros/humble/lib/rclcpp_components/component_container \
-  --ros-python /usr/bin/python3 --output results/m2b-integration-001
+  --ros-python /usr/bin/python3 --skip-temperature --output results/m2b-integration-001
 ```
 
 集成需要Linux pidfd、已有匹配SDK/编译依赖和预备离线pip，不自动下载；LoadNode仅用于该测试随机namespace下新建的组件容器，生产入口不调用LoadNode。测试核对模块摘要、共享引用、图/资源窗口区分、QoS未知项、重复名、无ROS失败、防覆盖、真实SIGTERM130及自有查询进程回收。失败目录保留。
 
+受控fixture的正常图和重复名称图分别保存graph-readiness.json及duplicate-readiness.json，最多3次、20秒查询预算。每次使用新结果目录（graph、graph-002等），stdout、graph-query、CLI终态不重写；就绪记录含预期/实际节点、组件、端点、QoS和两个查询窗口。仅完整的同一次快照被selected_output引用；不完整成功观察可以继续，查询/依赖错误及任何已观察端点的错误QoS等立即失败，不因端点缺失而跳过QoS校验。evaluated_monotonic记录期限内完整性判定，终态落盘时间另列。单次graph-wait保持2秒，query-timeout不超过10秒/剩余预算，额外退出与对象回收时间单列在 [环境指南](ROS_ENVIRONMENT.md)。此为测试就绪机制，不改变生产图查询或消息时延语义，也不证明现场瞬时空图根因。
+
 现场只需一套代表部署做一次只读图关系复核：优先同时包含独立节点和共享组件，核对声明名、实际图/组件结果、重复/缺失原因及资源引用，确认源目录不变。没有rclpy或ListNodes时记录具体缺口，停止重复尝试，不因此要求三机全套/C01/S01/DDS/GPU或性能ABBA重跑。该增量功能复核通过后收尾；原生追踪适配/身份实证另开有限增量，真实输入输出时延、吞吐、deadline和稳定输入无采集对照属于M3。
 
-接口依据：[rclpy Node图API](https://github.com/ros2/rclpy/blob/humble/rclpy/rclpy/node.py)、[组件管理器ListNodes实现](https://github.com/ros2/rclcpp/blob/humble/rclcpp_components/src/component_manager.cpp)。开发核对日期2026-10-06，开发环境为Humble/Fast DDS；Orin/Thor现场SDK与其他发行版尚未由本增量实测认证。
+接口依据：[rclpy Node图API](https://github.com/ros2/rclpy/blob/humble/rclpy/rclpy/node.py)、[组件管理器ListNodes实现](https://github.com/ros2/rclcpp/blob/humble/rclcpp_components/src/component_manager.cpp)。开发核对日期2026-10-06，开发环境为Humble/Fast DDS；Orin的Humble/Fast DDS已有有限现场通过反馈；Thor真实ROS及其他发行版尚未验证，不据此认证所有现场SDK。

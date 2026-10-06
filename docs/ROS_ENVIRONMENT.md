@@ -1,6 +1,6 @@
 # ROS 环境预检与有限现场回归
 
-0.7.0核心监控及故障回归已有三台设备通过反馈，真实图/组件查询已在Orin的Humble/Fast DDS验证。Thor本次只检查常规路径，未找到SDK不等于平台不支持。0.7.1补充显式SDK/Python/RMW选择、独立预检及有限回归入口。现场分项验证通过，但原样统一入口漏传温度跳过要求；Thor依赖错误被后续来源核对覆盖。0.7.2仅修这两个问题，不安装SDK、不切换系统默认环境。
+0.7.0核心监控及故障回归已有三台设备通过反馈，真实图/组件查询已在Orin的Humble/Fast DDS验证。Thor本次只检查常规路径，未找到SDK不等于平台不支持。0.7.1补充显式SDK/Python/RMW选择、独立预检及有限回归入口。现场分项验证通过，但原样统一入口漏传温度跳过要求；Thor依赖错误被后续来源核对覆盖。0.7.2两项修补已有三机有限现场通过反馈；Orin原样入口首次图不完整，另一个新目录重试通过，首次失败原因仍未知。后续仅改受控fixture就绪与诊断，产品包和17模块保持0.7.2，不安装SDK、不切换系统默认环境。
 
 ## 先检查已有环境
 
@@ -39,8 +39,8 @@ robot-perf-ros --monitor-run results/business-001 --graph --domain-id 0 \
 | --- | --- | --- | --- |
 | macOS/Python3.9，无ROS | 宿主针对性验证 | 不适用 | 不作为Linux设备实测 |
 | ARM64 Ubuntu22/Python3.10.12、Humble/rclpy3.3.22/Fast DDS | 断网Linux验证 | 开发容器真实部署通过 | 容器不是Orin/Thor性能基线 |
-| Orin、现场Humble/Python3.10.12/rclpy3.3.21/Fast DDS，0.7.1 | 用户反馈337项及分项安装通过 | 预检、真实图/组件通过反馈 | 原样统一入口未通过；0.7.2修补待有限复核 |
-| Thor、当前所选Python缺rclpy，0.7.1 | 用户反馈337项及核心分项安装通过 | 未验证 | 主报告覆盖依赖原因；不证明私有SDK不存在 |
+| Orin、现场Humble/Python3.10.12/rclpy3.3.21/Fast DDS，0.7.1/0.7.2 | 用户反馈337项全套及后续37项有限检查/安装通过 | 预检、真实图/组件通过反馈 | 0.7.2原样入口重试通过；首次空图失败保留，原因未知 |
+| Thor、当前所选Python缺rclpy，0.7.1/0.7.2 | 用户反馈337项全套及后续37项有限检查/核心安装通过 | 未验证 | 0.7.2原样核心入口及缺依赖诊断通过；真实ROS未验证 |
 | Cyclone/其他RMW、其他ROS/Python组合 | 已知/未知QoS受控契约检查 | 本增量未验证 | 受控值通过不认证真实RMW兼容 |
 
 QoS集成不再要求所有RMW都报告UNKNOWN/depth0。对两个发布端、两个订阅端检查实际字段：UNKNOWN时depth=null且原因明确；已知策略须与测试组件的KEEP_LAST一致，depth等于reported_depth且为配置深度3、无缺失原因。可靠性仍须符合组件RELIABLE配置。实际端点结果保存到安装验证记录，不将报告0当作真实队列深度。
@@ -73,14 +73,14 @@ scripts/run-device-regression.sh \
   --container-binary /path/to/ros/lib/rclcpp_components/component_container
 ```
 
-受控fixture用独立domain77和随机namespace，只加载到测试自己创建的容器，不对生产组件做LoadNode/unload。默认预检domain0与fixture隔离domain77是两项不同观察。真实业务仅用生产只读入口，不用fixture假称算法验证。追踪导入仍为synthetic契约检查，未新增真实CTF证明。
+受控fixture用独立domain77和随机namespace，只加载到测试自己创建的容器，不对生产组件做LoadNode/unload。默认预检domain0与fixture隔离domain77是两项不同观察。fixture正常/重复名称两个阶段分别使用最多3次、20秒总查询预算；单次graph-wait仍为2秒，query-timeout最多10秒且受剩余预算限制，预算不足不启动下一次查询。每次CLI有额外最多2秒退出等待，达到就绪期限后返回的完整结果也不通过；进程回收沿用已有有界清理，20秒不代表包括所有关闭/落盘的整阶段墙钟上限。attempt的evaluated_monotonic记录完整性判定时间，必须早于期限；finished_monotonic记录后续终态保存点，不用其代替判定时间。真实业务仅用生产只读入口，不用fixture假称算法验证。追踪导入仍为synthetic契约检查，未新增真实CTF证明。
 
 ## 下一次设备验证与停止条件
 
-本轮只需一台方便设备，用上面的原样统一入口追加 `--skip-temperature` 完成一次核心有限回归；不修改测试副本、不依赖外部温度屏蔽。检查最终complete、intake/workload阶段passed、正常与取消子进程guard记录finished=true且accesses=[]、取消130及自有对象回收。已有三机0.7.1单测及分项结果保留，无需重跑完整单元/C01/S01/GPU/DDS/ABBA。
+0.7.2温度传递及原始依赖错误两项旧P2已有三机有限验证，可以收尾；不用再跑核心安装、37项或三机全套/C01/S01/GPU/DDS/ABBA。Orin首次图不完整不能因同版本重试通过而被删除或称为根因修复。
 
-若所选Python确实缺rclpy，再用新目录执行显式sdk-prefix/RMW预检，预期退出1、ready=false、终态failed、graph和preflight的原因都保留rclpy缺失，source.python_executable非空；原始stdout也保留该原因。依赖完整时不人为卸载SDK，使用受控缺失夹具验证。SDK/RMW真正来源不符仍须失败，不能用这一修补放行错误来源。
+测试后续修补只更新仓库的fixture就绪与诊断，复用模块匹配的0.7.2 wheel。具备已有SDK的一台设备，只运行一次 [受控ROS集成](ROS_BUSINESS_EVIDENCE.md#验证与停止条件)，追加 `--skip-temperature`。检查graph-readiness和duplicate-readiness：最终ready、selected_output对应一个单独完整快照；每次不完整快照与日志保留，recovered_incomplete和尝试数可见。不能合并不同快照补齐节点/端点；SDK/查询失败、任何已观察端点的QoS错误（即使端点数量不完整）、意外重复名和端点归属不符立即失败，不重试整个套件或自动重启fixture。持续不完整到次数/期限上限则失败，保留预期/实际节点、端点和查询窗口。查询退出失败仍有预期/实际退出码及日志路径。
 
-上述路径通过即收尾0.7.2。下一项独立工作是在一台已定位兼容SDK的Thor上做真实预检/只读graph，具备构建环境时可选受控fixture；缺依赖记录具体错误，不自动安装或反复搜索全盘。
+开发受控空图复现只能证明处理机制，不能认定现场空图根因。若单次现场仍失败，保留已有目录和上述记录用于分析；不进行无限重试。该有限检查满足后收尾测试增量；没有SDK的Thor无需为此重测缺依赖路径。
 
-真实CTF身份桥接、算法声明确认和业务输入输出统计另做有限增量；没有事件和预算时业务验收保持not_evaluated，不因工具回归通过而升级。
+下一项独立工作是在一台已定位兼容SDK的Thor上做真实预检/只读graph，缺依赖记录具体错误，不自动安装或反复搜索全盘。真实CTF身份桥接、算法声明确认和业务输入输出统计另做有限增量；没有事件和预算时业务验收保持not_evaluated。
