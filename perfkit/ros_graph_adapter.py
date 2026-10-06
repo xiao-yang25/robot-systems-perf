@@ -3,6 +3,8 @@ import argparse
 import json
 import os
 import platform
+import sys
+from importlib import metadata
 import time
 import uuid
 
@@ -94,6 +96,14 @@ def snapshot(domain_id, wait_seconds, timeout_seconds, managers, deadline_ns=Non
             result['components'] = [{'manager': manager, 'status': 'unavailable',
                 'reason': 'rclpy unavailable', 'nodes': None} for manager in managers]
             return result
+        result['source']['python_executable'] = sys.executable
+        result['source']['rclpy_module'] = getattr(rclpy, '__file__', None)
+        try:
+            result['source']['rclpy_version'] = metadata.version('rclpy')
+        except metadata.PackageNotFoundError:
+            result['source']['rclpy_version'] = None
+        # A sourced setup may declare another domain. The explicit request wins.
+        os.environ['ROS_DOMAIN_ID'] = str(domain_id)
         rclpy.init(args=[])
         initialized = True
         result['source']['rmw'] = get_rmw_implementation_identifier()
@@ -182,7 +192,10 @@ def main():
     parser.add_argument('--timeout-seconds', type=float, required=True)
     parser.add_argument('--deadline-ns', type=int)
     parser.add_argument('--component-manager', action='append', default=[])
+    parser.add_argument('--rmw')
     args = parser.parse_args()
+    if args.rmw is not None:
+        os.environ['RMW_IMPLEMENTATION'] = args.rmw
     print(json.dumps(snapshot(args.domain_id, args.wait_seconds, args.timeout_seconds,
                               args.component_manager, args.deadline_ns), allow_nan=False))
 

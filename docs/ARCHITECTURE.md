@@ -115,3 +115,5 @@ C01通过 `runtime_evidence.hpp` 在循环外保存自身maps及启动实际RMW/
 ROS解释器通过同包内独立文件执行rclpy适配器，只创建自有观察节点；节点/端点API及显式ListNodes查询不会修改业务。自有query子进程有4MiB合计输出限制和全局超时，取消后有界回收；外部业务不归工具所有。重复节点、空图、部分失败、权限/SDK缺失分别留证，不能提升为本地PID确认。
 
 新monitor增加只读boot_id、PID namespace和monotonic上下文，旧记录缺项保持未知。规范化trace身份、时间、domain和历史引用必须一致；标外部导入身份一致性，不把所附digest当作已解码/认证原始CTF。没有真实tracing SDK不阻塞图路径，消息/回调/端到端指标延后M3。具体契约与验证见 [ROS对象关系证据](ROS_BUSINESS_EVIDENCE.md)。
+
+0.7.1环境预检复用同一有界query与终态路径，也不要求M2a输入。操作者先加载已有SDK环境；工具仅用sdk-prefix核对实际rclpy模块来源，再通过指定Python直接查询并核对显式RMW。SDK setup通常会启动前台子命令，工具内部source在超时后仅回收shell可能留下子孙进程；因此取消自动加载方案，避免为环境预检另建进程树管理器，也不修改全局SDK配置。现场包装器只exec选定Python，不加载setup。版本与模块一致性由wheel核对，不把源码预检冒称安装CLI执行。契约和矩阵见 [ROS环境指南](ROS_ENVIRONMENT.md)。

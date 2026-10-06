@@ -27,7 +27,7 @@ robot-perf-intake --view native-host --require-jetson --machine-id robot-demo \
 python3 -m venv --without-pip "$HOME/.venvs/robot-systems-perf"
 "$HOME/.venvs/robot-systems-perf/bin/python" -m ensurepip --upgrade
 "$HOME/.venvs/robot-systems-perf/bin/python" -m pip install --no-index \
-  /path/to/robot_systems_perf-0.7.0-py3-none-any.whl
+  /path/to/robot_systems_perf-0.7.1-py3-none-any.whl
 ```
 
 [Python ensurepip 官方说明](https://docs.python.org/3.10/library/ensurepip.html) 明确该引导不访问网络；发行版可能未提供它，不因此自动安装系统包。若 venv/ensurepip 均缺失，完整源码包可直接离线运行，在任意目录单次指定模块位置：

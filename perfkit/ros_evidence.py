@@ -14,7 +14,7 @@ import time
 
 from .lifecycle import defer_interrupts
 from .monitor import _source_record
-from .ros_graph import collect_graph, validate_graph_request
+from .ros_graph import collect_graph, validate_graph_request, validate_ros_environment
 from .workload import validate_workload
 
 
@@ -245,7 +245,17 @@ def _report(output, result):
 
 
 def run_ros_evidence(monitor_run, output, *, graph=False, domain_id=None, ros_python=sys.executable,
-                     wait_seconds=2, timeout_seconds=10, component_managers=(), trace_metadata=None):
+                     wait_seconds=2, timeout_seconds=10, component_managers=(), trace_metadata=None,
+                     preflight=False, rmw=None, sdk_prefix=None):
+    validate_ros_environment(rmw, sdk_prefix)
+    if preflight:
+        if monitor_run is not None or trace_metadata is not None:
+            raise ValueError('preflight cannot read monitor or trace inputs')
+        graph = True
+    elif monitor_run is None:
+        raise ValueError('monitor_run required unless preflight is selected')
+    if not graph and (rmw is not None or sdk_prefix is not None):
+        raise ValueError('SDK/RMW selection requires a graph query or preflight')
     if not graph and trace_metadata is None:
         raise ValueError('explicit --graph or --trace-metadata is required')
     if graph:
@@ -258,18 +268,20 @@ def run_ros_evidence(monitor_run, output, *, graph=False, domain_id=None, ros_py
         raise ValueError('bounded query wait/timeout required')
     if not isinstance(component_managers, (list, tuple)) or len(component_managers) > 16 or any(not isinstance(m, str) or not NODE.fullmatch(m) for m in component_managers):
         raise ValueError('bounded absolute component manager names required')
-    # A new subdirectory would mutate the supposedly read-only source run.
-    source_directory = Path(monitor_run).resolve()
     output = Path(output)
-    try:
-        output.resolve().relative_to(source_directory)
-    except ValueError:
-        pass
-    else:
-        raise ValueError('output must be separate from the source monitor directory')
-    monitor = load_monitor(source_directory)
-    if graph and monitor['workload']['ros_domain_id'] is not None and monitor['workload']['ros_domain_id'] != domain_id:
-        raise ValueError('graph domain contradicts recorded workload domain')
+    monitor = None
+    if not preflight:
+        # A new subdirectory would mutate the supposedly read-only source run.
+        source_directory = Path(monitor_run).resolve()
+        try:
+            output.resolve().relative_to(source_directory)
+        except ValueError:
+            pass
+        else:
+            raise ValueError('output must be separate from the source monitor directory')
+        monitor = load_monitor(source_directory)
+        if graph and monitor['workload']['ros_domain_id'] is not None and monitor['workload']['ros_domain_id'] != domain_id:
+            raise ValueError('graph domain contradicts recorded workload domain')
     trace, trace_raw = _read(trace_metadata) if trace_metadata is not None else (None, None)
     if trace_metadata is not None:
         trace = validate_trace(trace)
@@ -279,7 +291,8 @@ def run_ros_evidence(monitor_run, output, *, graph=False, domain_id=None, ros_py
     primary = None
     try:
         _json(output / 'ros-status.json', status)
-        _json(output / 'ros-inputs.json', {'source': _source_record(), 'monitor_source_hashes': monitor['source_hashes'],
+        _json(output / 'ros-inputs.json', {'source': _source_record(), 'monitor_source_hashes': monitor['source_hashes'] if monitor else None,
+            'preflight': preflight, 'rmw_requested': rmw, 'sdk_prefix': str(sdk_prefix) if sdk_prefix else None,
             'domain_id': domain_id, 'graph_requested': graph, 'component_managers': component_managers,
             'wait_seconds': wait_seconds, 'timeout_seconds': timeout_seconds,
             'trace_input_sha256': hashlib.sha256(trace_raw).hexdigest() if trace_raw else None})
@@ -288,11 +301,20 @@ def run_ros_evidence(monitor_run, output, *, graph=False, domain_id=None, ros_py
         graph_result = None
         if graph:
             graph_result = collect_graph(output, domain_id, ros_python, wait_seconds, timeout_seconds,
-                                         component_managers=component_managers)
+                                         component_managers=component_managers, rmw=rmw, sdk_prefix=sdk_prefix)
             _json(output / 'graph-query.json', graph_result)
-        result = associate(monitor, graph_result, trace)
-        _json(output / 'ros-relations.json', result)
-        _report(output, result)
+        if preflight:
+            result = {'format_version': 1, 'kind': 'ros_environment_preflight',
+                      'ready': graph_result['status'] in ('observed', 'empty'),
+                      'source': graph_result['source'], 'reason': graph_result.get('reason'),
+                      'components': graph_result['components'],
+                      'business_acceptance': 'not_evaluated',
+                      'scope': 'Only the explicitly selected SDK/Python/RMW and read-only query.'}
+            _json(output / 'ros-preflight.json', result)
+        else:
+            result = associate(monitor, graph_result, trace)
+            _json(output / 'ros-relations.json', result)
+            _report(output, result)
         if graph_result is not None and graph_result['status'] not in ('observed', 'empty'):
             raise RuntimeError('ROS graph query ' + graph_result['status'] + ': ' + str(graph_result.get('reason')))
         status['status'] = 'complete'
@@ -330,7 +352,10 @@ def run_ros_evidence(monitor_run, output, *, graph=False, domain_id=None, ros_py
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--monitor-run', type=Path, required=True)
+    parser.add_argument('--monitor-run', type=Path)
+    parser.add_argument('--preflight', action='store_true')
+    parser.add_argument('--sdk-prefix', type=Path)
+    parser.add_argument('--rmw')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--graph', action='store_true')
     parser.add_argument('--domain-id', type=int)
@@ -346,7 +371,8 @@ def main():
     try:
         run_ros_evidence(args.monitor_run, args.output, graph=args.graph, domain_id=args.domain_id,
             ros_python=args.ros_python, wait_seconds=args.graph_wait, timeout_seconds=args.query_timeout,
-            component_managers=args.component_manager, trace_metadata=args.trace_metadata)
+            component_managers=args.component_manager, trace_metadata=args.trace_metadata,
+            preflight=args.preflight, rmw=args.rmw, sdk_prefix=args.sdk_prefix)
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError, RuntimeError) as error:

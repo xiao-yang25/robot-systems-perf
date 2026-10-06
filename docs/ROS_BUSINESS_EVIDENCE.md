@@ -4,6 +4,8 @@
 
 本增量使用官方 rclpy 图接口和 composition_interfaces/ListNodes 只读服务，不启动 ROS CLI daemon、不订阅业务数据、不设置参数、不加载/卸载生产组件。核心安装包只依赖 Python 标准库；ROS 查询在操作者选定的、已有 rclpy 的独立 Python 解释器中运行。查询会临时创建自身的 ROS 节点，退出后销毁并回收查询进程。
 
+0.7.0图功能已收到Orin现场通过反馈；0.7.1可先做独立SDK/Python/RMW预检，见 [环境与有限回归指南](ROS_ENVIRONMENT.md)。真实tracing与业务归属仍未验证。
+
 ## 在设备上执行一次
 
 保留现场清单和节点名字在本地。先按 [业务声明指南](BUSINESS_MAPPING.md) 采集一套业务；需要后续追踪一致性判断时，在清单填写正确的 `ros_domain_id`。0.7.0 monitor 在 environment.json 增加 boot_id、PID namespace 与 linux_monotonic 时间域，缺项保留 null 和原因。旧目录仍可做图查询；缺身份上下文时不提升追踪关联。
@@ -108,7 +110,7 @@ cmake -S tests/fixtures/ros_components -B results/m2b-component-build \
 cmake --build results/m2b-component-build -j2
 cmake --install results/m2b-component-build
 python3 tests/integration_ros_evidence.py \
-  --wheel /path/to/robot_systems_perf-0.7.0-py3-none-any.whl \
+  --wheel /path/to/robot_systems_perf-0.7.1-py3-none-any.whl \
   --component-prefix results/m2b-component-install \
   --container-binary /opt/ros/humble/lib/rclcpp_components/component_container \
   --ros-python /usr/bin/python3 --output results/m2b-integration-001

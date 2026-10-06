@@ -51,6 +51,15 @@ def validate_graph_request(domain_id, python_executable, wait_seconds, timeout_s
         raise ValueError('component_managers must not contain duplicates')
 
 
+def validate_ros_environment(rmw=None, sdk_prefix=None):
+    if rmw is not None and (not isinstance(rmw, str) or len(rmw) > 200 or not re.fullmatch(r'rmw_[A-Za-z0-9_]+', rmw)):
+        raise ValueError('rmw must be an explicit rmw implementation identifier')
+    if sdk_prefix is not None:
+        path = Path(sdk_prefix)
+        if not path.is_absolute() or not path.is_dir():
+            raise ValueError('sdk_prefix must be an absolute existing SDK directory')
+
+
 def _failure(domain_id, start_ns, reason):
     return {'format_version': 1, 'kind': 'ros_graph_snapshot', 'status': 'failed',
             'reason': reason, 'domain_id': domain_id,
@@ -195,7 +204,7 @@ def _validate_snapshot(value, domain_id, managers):
 
 def collect_graph(output: Path, domain_id: int, python_executable: str,
                   wait_seconds: float = 2, timeout_seconds: float = 10,
-                  component_managers=()) -> dict:
+                  component_managers=(), *, rmw=None, sdk_prefix=None) -> dict:
     """Query once; output must exist. Invalid requests launch no process.
 
     Exceptions from host I/O or cancellation propagate after bounded cleanup.
@@ -203,6 +212,7 @@ def collect_graph(output: Path, domain_id: int, python_executable: str,
     """
     validate_graph_request(domain_id, python_executable, wait_seconds, timeout_seconds,
                            component_managers)
+    validate_ros_environment(rmw, sdk_prefix)
     # Ignored/custom SIGCHLD can reap the child before Popen observes its exit,
     # causing Popen to substitute returncode=0. Refuse that state before writing
     # query evidence or launching anything; never replace global handlers here.
@@ -219,6 +229,8 @@ def collect_graph(output: Path, domain_id: int, python_executable: str,
                '--timeout-seconds', str(timeout_seconds)]
     for manager in component_managers:
         command += ['--component-manager', manager]
+    if rmw is not None:
+        command += ['--rmw', rmw]
     environment = dict(os.environ, ROS_DOMAIN_ID=str(domain_id))
     process = None
     original = None
@@ -266,6 +278,17 @@ def collect_graph(output: Path, domain_id: int, python_executable: str,
     if failure:
         result['components'] = [{'manager': manager, 'status': 'failed',
                                  'reason': failure, 'nodes': None} for manager in component_managers]
+    if not failure and rmw is not None and result['source']['rmw'] != rmw:
+        result.update(status='failed', reason='actual RMW does not match explicitly requested RMW')
+    if not failure and sdk_prefix is not None:
+        module = result['source'].get('rclpy_module')
+        try:
+            if not isinstance(module, str) or not Path(module).is_absolute():
+                raise ValueError('actual rclpy module path unavailable')
+            Path(module).resolve().relative_to(Path(sdk_prefix).resolve())
+        except ValueError:
+            result.update(status='failed', reason='actual rclpy module is not within requested SDK prefix')
+    result['environment_request'] = {'rmw': rmw, 'sdk_prefix': str(sdk_prefix) if sdk_prefix else None}
     result['limitations'] = list(dict.fromkeys(result['limitations'] + LIMITATIONS))
     result['query_evidence'] = {'stdout': 'ros-graph-query/stdout.bin',
         'stderr': 'ros-graph-query/stderr.bin', 'captured_bytes': captured_bytes,

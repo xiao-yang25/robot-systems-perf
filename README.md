@@ -118,6 +118,16 @@ robot-perf-ros --monitor-run results/business-001 --graph --domain-id 0 \
 
 核心不增加ROS依赖，图查询使用已有SDK对应的rclpy解释器。图可见不等于本地PID归属；可选导入规范化节点初始化元数据，仅标外部证据身份一致性。原生CTF/真实追踪SDK、消息链路时延和deadline尚未完成。执行方式、未知QoS、证据层次与一次设备复核见 [M2b指南](docs/ROS_BUSINESS_EVIDENCE.md)。
 
+0.7.0核心回归已有三机通过反馈，Orin的Humble/Fast DDS图查询通过；Thor真实ROS仍需定位已有SDK。0.7.1新增独立环境预检及显式SDK/RMW选择：
+
+```bash
+robot-perf-ros --preflight --domain-id 0 --graph-wait 0 \
+  --ros-python /usr/bin/python3 --sdk-prefix /path/to/ros \
+  --rmw rmw_fastrtps_cpp --output results/ros-preflight-001
+```
+
+有限现场回归入口、QoS兼容边界和实际验证矩阵见 [ROS环境指南](docs/ROS_ENVIRONMENT.md)。真实tracing与业务路径仍待后续。
+
 ## 结果与检查
 
 阅读套件目录下的 `SUITE_REPORT.md`，再查看每个 case 的 `REPORT.md` 和 `summary.json`。`suite-status.json` / `run-status.json` 的 complete 只表示采集成功；业务达标、输入质量和采集开销分别判断。失败退出非零并保留证据；结果不进入 Git。

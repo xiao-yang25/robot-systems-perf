@@ -33,6 +33,25 @@ finally: node.destroy_node(); rclpy.shutdown()
 '''
 
 
+def verify_endpoint_qos(topic):
+    """Fixture reliability is known; graph queue-depth availability is RMW-specific."""
+    for role in ('publishers', 'subscriptions'):
+        assert len(topic[role]) == 2, role
+        for endpoint in topic[role]:
+            qos = endpoint['qos']
+            assert qos['reliability']['name'] == 'RELIABLE', (role, qos)
+            assert type(qos['reported_depth']) is int and qos['reported_depth'] >= 0
+            if qos['history']['name'] == 'UNKNOWN':
+                assert qos['depth'] is None
+                assert qos['depth_reason'] == 'RMW graph does not expose queue depth'
+            else:
+                assert qos['history']['name'] == 'KEEP_LAST', 'fixture configures KEEP_LAST'
+                assert type(qos['depth']) is int and qos['depth'] == qos['reported_depth']
+                assert qos['depth_reason'] is None
+                if qos['history']['name'] == 'KEEP_LAST':
+                    assert qos['depth'] == 3, 'fixture configures KEEP_LAST depth 3'
+
+
 def load_components(manager, namespace):
     import rclpy
     from composition_interfaces.srv import LoadNode
@@ -55,7 +74,7 @@ def load_components(manager, namespace):
         rclpy.shutdown()
 
 
-def verify(wheel, output, component_prefix, container_binary, ros_python):
+def verify(wheel, output, component_prefix, container_binary, ros_python, *, sdk_prefix=None):
     owner = OwnedProcesses()
     with tempfile.TemporaryDirectory(prefix='m2b-install-') as temporary:
         root = Path(temporary); prefix = root/'venv'; cwd = root/'unrelated'; cwd.mkdir()
@@ -118,7 +137,20 @@ def verify(wheel, output, component_prefix, container_binary, ros_python):
                 namespace+'/first', namespace+'/second']
             topic = next(t for t in snapshot['topics'] if t['name'] == namespace+'/data')
             assert len(topic['publishers']) == len(topic['subscriptions']) == 2
-            assert all(p['qos']['reliability']['name'] == 'RELIABLE' and p['qos']['history']['name'] == 'UNKNOWN' and p['qos']['depth'] is None and p['qos']['reported_depth'] == 0 and p['qos']['depth_reason'] for p in topic['publishers'])
+            verify_endpoint_qos(topic)
+            preflight = output/'preflight'
+            preflight_command = [ros_cli, '--preflight', '--domain-id', '77',
+                                 '--ros-python', ros_python, '--graph-wait', '0', '--query-timeout', '10']
+            if sdk_prefix is not None:
+                preflight_command += ['--sdk-prefix', str(sdk_prefix)]
+            run([*preflight_command, '--rmw', snapshot['source']['rmw'], '--output', str(preflight)], 'preflight')
+            readiness = json.loads((preflight/'ros-preflight.json').read_text())
+            assert readiness['ready'] and readiness['source']['rmw'] == snapshot['source']['rmw']
+            assert readiness['source']['python_executable'] and readiness['source']['rclpy_module']
+            assert not (preflight/'ros-relations.json').exists()
+            run([*preflight_command, '--rmw', 'rmw_perfkit_missing', '--output', str(output/'bad-rmw')],
+                'bad-rmw', expected=1)
+            assert json.loads((output/'bad-rmw/ros-status.json').read_text())['status'] == 'failed'
             relations = json.loads((graph/'ros-relations.json').read_text())
             assert all(role['nodes'][0]['graph']['status'] == 'present' and
                        role['nodes'][0]['process_relation']['status'] == 'unresolved' for role in relations['functions'])
@@ -217,7 +249,11 @@ print(json.dumps({'version':metadata.version('robot-systems-perf'),'hashes':{'pe
             assert actual['version'] == expected_version and actual['hashes'] == hashes
             (output/'verification.json').write_text(json.dumps({'installed_version': expected_version,
                 'installed_module_hashes_match_wheel': True, 'real_rclcpp_component_container': True,
+                'installed_preflight_ready': True, 'explicit_missing_rmw_failed': True,
                 'two_shared_components_and_independent_node': True, 'endpoint_qos': True,
+                'runtime': snapshot['source'],
+                'endpoint_history': {role: [p['qos']['history']['name'] for p in topic[role]]
+                                     for role in ('publishers', 'subscriptions')},
                 'duplicate_nodes_retained': True, 'graph_not_pid_attribution': True,
                 'query_and_monitor_windows_separate': True, 'synthetic_trace_import_only': True,
                 'source_monitor_unchanged': True, 'unavailable_ros_failed': True,
@@ -236,8 +272,9 @@ def main():
     parser.add_argument('--component-prefix', type=Path, required=True)
     parser.add_argument('--container-binary', default='/opt/ros/humble/lib/rclcpp_components/component_container')
     parser.add_argument('--ros-python', default=sys.executable)
+    parser.add_argument('--sdk-prefix', type=Path)
     args = parser.parse_args(); args.output.mkdir(parents=True, exist_ok=False)
-    verify(args.wheel, args.output.resolve(), args.component_prefix, args.container_binary, args.ros_python)
+    verify(args.wheel, args.output.resolve(), args.component_prefix, args.container_binary, args.ros_python, sdk_prefix=args.sdk_prefix)
 
 
 if __name__ == '__main__': main()
