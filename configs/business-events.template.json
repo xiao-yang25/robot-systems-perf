@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "kind": "robot_business_events",
+  "source": {
+    "adapter": "application_events_v1",
+    "tool_version": "replace-with-exporter-version",
+    "raw_sha256": null,
+    "synthetic": false
+  },
+  "context": {"boot_id": null, "pid_namespace": null, "clock": "linux_monotonic", "ros_domain_id": null},
+  "window": {"start_ns": null, "end_ns": null, "expected_inputs": null, "dropped_events": null},
+  "events": []
+}

@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "chain_id": "replace-with-local-chain-id",
+  "workload_id": "replace-with-monitor-workload-id",
+  "deployment_version": "replace-with-reviewed-deployment-version",
+  "input": {"function_id": "input_function", "node": "/replace/input_node"},
+  "output": {"function_id": "output_function", "node": "/replace/output_node"},
+  "deadline_ns": null
+}
