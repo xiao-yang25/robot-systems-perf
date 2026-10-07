@@ -4,6 +4,8 @@
 
 新增可复现的[Docker机器人参考场景](docs/DOCKER_REFERENCE.md)：导航、感知融合控制、平面机械臂三个跨进程闭环拓扑，共用现有资源和事件测量。运行 `./scripts/run-reference-docker.sh all results/reference-001`；基础算法与简化仿真结果不替代Nav2/MoveIt或生产业务验收。
 
+[官方与开源参考资料](docs/REFERENCE_GUIDE.md)提供固定来源清单和离线下载入口；[拓扑与追踪接入](docs/ROS_TOPOLOGY_AND_TRACING.md)说明配置、运行图和真实业务路径的区别。源码工具 `scripts/export_ros_topology.py` 可将已有 ROS 图快照导出为 JSON/DOT，不要求修改业务或安装 ROS。
+
 面向具身机器人的中间件与系统软件性能工具。支持在 Orin/Thor 上采集通信、周期任务和资源基线，再按证据开展优化。
 
 目标是 Orin/Thor 的通用基础适配：同一套工具通过环境识别和配置用于不同设备，具体算法部署通过 PID、名称、用户和 cgroup 等规则选择采集范围。平台基础功能不依赖某台机器的算法源码或固定服务名；真实业务链路、消息类型和期限按应用另外配置。基本适配不代表所有 BSP/ROS 版本、硬件指标和业务链路已经验证。

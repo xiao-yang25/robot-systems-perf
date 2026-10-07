@@ -1,0 +1,206 @@
+{
+  "format_version": 1,
+  "purpose": "Offline reading only; reference branches do not certify device compatibility.",
+  "sources": [
+    {
+      "file": "ros2-tracing-humble.tar.gz",
+      "title": "ROS 2 tracing Humble 源码与许可证",
+      "kind": "source-archive",
+      "url": "https://codeload.github.com/ros2/ros2_tracing/tar.gz/3c159b382d2d565e26eaa91e39c9ec06a5c6fe88",
+      "repository": "ros2/ros2_tracing",
+      "revision": "3c159b382d2d565e26eaa91e39c9ec06a5c6fe88",
+      "reference_branch": "humble",
+      "sha256": "675b37614fde5b7247560f9456f542f111fe22e8b2d36dddac169f8931a7c222"
+    },
+    {
+      "file": "ros2-tracing-humble-README.md",
+      "title": "ROS 2 tracing 使用说明",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/ros2/ros2_tracing/3c159b382d2d565e26eaa91e39c9ec06a5c6fe88/README.md",
+      "repository": "ros2/ros2_tracing",
+      "revision": "3c159b382d2d565e26eaa91e39c9ec06a5c6fe88",
+      "reference_branch": "humble",
+      "sha256": "3a8d250e447c57d44796c549eb6f65ed3b3d7416b1a0c8ee7cace54b8dd32b96"
+    },
+    {
+      "file": "ros2-tracing-design.md",
+      "title": "ROS 2 tracing 设计",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/ros2/ros2_tracing/3c159b382d2d565e26eaa91e39c9ec06a5c6fe88/doc/design_ros_2.md",
+      "repository": "ros2/ros2_tracing",
+      "revision": "3c159b382d2d565e26eaa91e39c9ec06a5c6fe88",
+      "reference_branch": "humble",
+      "sha256": "767e7de74587281e849b094e1623245f5fc8a7213ce2806277302c3df20fb912"
+    },
+    {
+      "file": "tracetools-analysis-humble.tar.gz",
+      "title": "tracetools_analysis Humble 源码与许可证",
+      "kind": "source-archive",
+      "url": "https://codeload.github.com/ros-tracing/tracetools_analysis/tar.gz/31d905e7019d9bae4e9f898944f8552ae0e0f793",
+      "repository": "ros-tracing/tracetools_analysis",
+      "revision": "31d905e7019d9bae4e9f898944f8552ae0e0f793",
+      "reference_branch": "humble",
+      "sha256": "f06c5be088dbea7798e1a4ace6df6a5578d576e61ec99cc68b1988e6b9f7e866"
+    },
+    {
+      "file": "tracetools-analysis-README.md",
+      "title": "tracetools_analysis 使用说明",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/ros-tracing/tracetools_analysis/31d905e7019d9bae4e9f898944f8552ae0e0f793/README.md",
+      "repository": "ros-tracing/tracetools_analysis",
+      "revision": "31d905e7019d9bae4e9f898944f8552ae0e0f793",
+      "reference_branch": "humble",
+      "sha256": "b800faa11ecd792d476efe97e31a9876e6fa06bda76c1bd28d53742127d827b1"
+    },
+    {
+      "file": "rqt-graph-ros2.tar.gz",
+      "title": "rqt_graph ros2 分支源码与许可证",
+      "kind": "source-archive",
+      "url": "https://codeload.github.com/ros-visualization/rqt_graph/tar.gz/b954dfb1d5446ad401f8d34ce9695ccd3e6b99d3",
+      "repository": "ros-visualization/rqt_graph",
+      "revision": "b954dfb1d5446ad401f8d34ce9695ccd3e6b99d3",
+      "reference_branch": "ros2",
+      "sha256": "9af7ade40ab997cc004d748cbc2578cefffcf033a05cfdb30ac4206c0b9015b1"
+    },
+    {
+      "file": "buildfarm-perf-tests.tar.gz",
+      "title": "ROS 2 buildfarm 性能测试源码与许可证",
+      "kind": "source-archive",
+      "url": "https://codeload.github.com/ros2/buildfarm_perf_tests/tar.gz/c4fe7611df5fecaf513356a149ab42a9db980e90",
+      "repository": "ros2/buildfarm_perf_tests",
+      "revision": "c4fe7611df5fecaf513356a149ab42a9db980e90",
+      "reference_branch": "master",
+      "sha256": "360cbde4c516445a4e01324d8e1814abde73881ccff21bed9a372b739d670d0e"
+    },
+    {
+      "file": "buildfarm-perf-tests-README.md",
+      "title": "ROS 2 buildfarm 指标与限制",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/ros2/buildfarm_perf_tests/c4fe7611df5fecaf513356a149ab42a9db980e90/README.md",
+      "repository": "ros2/buildfarm_perf_tests",
+      "revision": "c4fe7611df5fecaf513356a149ab42a9db980e90",
+      "reference_branch": "master",
+      "sha256": "7839d7865e154bc92d3edcc8023ed14c6a1c6f5a597cb13e0bde9737e555380b"
+    },
+    {
+      "file": "ros2-benchmark-README.md",
+      "title": "NVIDIA ROS 图基准说明",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/NVIDIA-ISAAC-ROS/ros2_benchmark/8ff7e73acebc4bd22ec85c16769871d7554badbf/README.md",
+      "repository": "NVIDIA-ISAAC-ROS/ros2_benchmark",
+      "revision": "8ff7e73acebc4bd22ec85c16769871d7554badbf",
+      "reference_branch": "main",
+      "sha256": "5cceb0d052b4db31a9ed350bf27db697cded33330c0e3a51e711591a271f455b"
+    },
+    {
+      "file": "ros2-benchmark-LICENSE",
+      "title": "NVIDIA ros2_benchmark 许可证",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/NVIDIA-ISAAC-ROS/ros2_benchmark/8ff7e73acebc4bd22ec85c16769871d7554badbf/LICENSE",
+      "repository": "NVIDIA-ISAAC-ROS/ros2_benchmark",
+      "revision": "8ff7e73acebc4bd22ec85c16769871d7554badbf",
+      "reference_branch": "main",
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+    },
+    {
+      "file": "robotperf-README.md",
+      "title": "RobotPerf 基准分类与方法",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/robotperf/benchmarks/f448b2274dcf8d4a1b0f0a61951d14f82314cb8c/README.md",
+      "repository": "robotperf/benchmarks",
+      "revision": "f448b2274dcf8d4a1b0f0a61951d14f82314cb8c",
+      "reference_branch": "main",
+      "sha256": "43aff5cf9758260ecd349ee133bd569b4ff00bb92b56e6ba3d0c620a4114bd85"
+    },
+    {
+      "file": "robotperf-LICENSE",
+      "title": "RobotPerf 许可证",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/robotperf/benchmarks/f448b2274dcf8d4a1b0f0a61951d14f82314cb8c/LICENSE",
+      "repository": "robotperf/benchmarks",
+      "revision": "f448b2274dcf8d4a1b0f0a61951d14f82314cb8c",
+      "reference_branch": "main",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "file": "rep-2014.rst",
+      "title": "REP-2014（Rejected，参考提案）",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/ros-infrastructure/rep/11ca24a41f31480dfb9562ba99f2a5b93d3ebda5/rep-2014.rst",
+      "repository": "ros-infrastructure/rep",
+      "revision": "11ca24a41f31480dfb9562ba99f2a5b93d3ebda5",
+      "reference_branch": "master",
+      "sha256": "774a42a3216016ad2de54fc33303df92bcd1a0f9d75e43c6110c98785adf8198"
+    },
+    {
+      "file": "ros2-topics.rst",
+      "title": "ROS 2 topic 与 rqt_graph 官方教程",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/ros2/ros2_documentation/0f0464a7e4ea63bc978c54435e6577bb9082c275/source/Tutorials/Beginner-CLI-Tools/Understanding-ROS2-Topics/Understanding-ROS2-Topics.rst",
+      "repository": "ros2/ros2_documentation",
+      "revision": "0f0464a7e4ea63bc978c54435e6577bb9082c275",
+      "reference_branch": "humble",
+      "sha256": "1223e2d14a71d655d93bbce871f9ff233e8fc3ecc5300a18c4aa3cdb0cc16455"
+    },
+    {
+      "file": "ros2-qos.rst",
+      "title": "ROS 2 QoS 官方说明",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/ros2/ros2_documentation/0f0464a7e4ea63bc978c54435e6577bb9082c275/source/Concepts/Intermediate/About-Quality-of-Service-Settings.rst",
+      "repository": "ros2/ros2_documentation",
+      "revision": "0f0464a7e4ea63bc978c54435e6577bb9082c275",
+      "reference_branch": "humble",
+      "sha256": "c31864ea3f9632e9587443731b2a54566a497a0f548b5f1a5e4728c76c5e61c1"
+    },
+    {
+      "file": "ros2-documentation-LICENSE",
+      "title": "ROS 2 文档许可证",
+      "kind": "text",
+      "url": "https://raw.githubusercontent.com/ros2/ros2_documentation/0f0464a7e4ea63bc978c54435e6577bb9082c275/LICENSE",
+      "repository": "ros2/ros2_documentation",
+      "revision": "0f0464a7e4ea63bc978c54435e6577bb9082c275",
+      "reference_branch": "humble",
+      "sha256": "134ca66d63690220f89aa2f9d5f1082cbae9695cf88e6eb6df57d149d22f6afd"
+    },
+    {
+      "file": "caret-architecture.html",
+      "title": "CARET 软件架构",
+      "kind": "html",
+      "url": "https://tier4.github.io/caret_doc/main/design/software_architecture/",
+      "revision": "rolling-page",
+      "sha256": null
+    },
+    {
+      "file": "caret-intra-node-path.html",
+      "title": "CARET 节点内部路径定义",
+      "kind": "html",
+      "url": "https://tier4.github.io/caret_doc/main/configuration/intra_node_data_path/",
+      "revision": "rolling-page",
+      "sha256": null
+    },
+    {
+      "file": "linux-sched-stats.html",
+      "title": "Linux 调度统计",
+      "kind": "html",
+      "url": "https://docs.kernel.org/scheduler/sched-stats.html",
+      "revision": "rolling-page",
+      "sha256": null
+    },
+    {
+      "file": "tegrastats-r38.2.html",
+      "title": "Jetson r38.2 Tegrastats",
+      "kind": "html",
+      "url": "https://docs.nvidia.com/jetson/archives/r38.2/DeveloperGuide/AT/JetsonLinuxDevelopmentTools/TegrastatsUtility.html",
+      "revision": "Jetson Linux r38.2",
+      "sha256": null
+    },
+    {
+      "file": "nsight-systems-user-guide.html",
+      "title": "Nsight Systems 用户指南",
+      "kind": "html",
+      "url": "https://docs.nvidia.com/nsight-systems/UserGuide/index.html",
+      "revision": "rolling-page",
+      "sha256": null
+    }
+  ]
+}

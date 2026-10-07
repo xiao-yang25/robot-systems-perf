@@ -1,5 +1,16 @@
 # 验证记录
 
+## 离线参考与 ROS topic 拓扑导出（2026-10-07）
+
+新增源码工具、来源清单和接入说明，不改变18个perfkit模块、0.8.1安装包或生产采集入口。此增量使用宿主macOS ARM64/Python3.9，不连接设备或生产业务。
+
+- 下载21项公开参考文件（4个源码归档、12份文本/许可证、5个HTML），合计4,223,222字节；逐项独立复核SHA256。固定提交的文本/归档摘要进入源码catalog，滚动HTML保留实际取得摘要。旧资料原始摘要亦复核，合并离线包24,114,090字节；不安装、执行或解压第三方代码。rqt_graph历史分支许可在源文件头部；REP-2014为Rejected。
+- 初版相关66项通过；独立审查随后确认DOT证据遗漏、failed快照缺角色字段和HTTP截断状态三项问题。补完整安全JSON注释/失败原因、缺角色unavailable和HTTPException失败留证；相关68项通过，最终真实标准库HTTP chunk截断夹具及新增18项再通过。保留初始问题证据，不称为设备缺陷。
+- 用此前Docker/Humble/Fast DDS三场景的已保存图执行最终JSON/DOT导出，navigation/perception/arm分别12/15/15个端点；与原端点逐项相等，原SHA未变。重复节点名称、组件观察、未知QoS、缺失读取、empty/failed、4MiB超限、FIFO和防覆盖等边界已验证；不把图当作交付或业务因果。
+- 修改文档的链接、表格、示例及敏感信息检查与diff检查通过；两个脚本语法通过。独立最终审查APPROVE，限于本次未提交增量。
+
+开发证据在忽略的 `results/topology-20261007/`；离线包在 `reference-downloads/`。本机没有Graphviz，因此仅验证DOT文本及完整元数据，未渲染SVG。未重跑全量单测、实时ROS图查询、设备/业务性能或C01/S01/GPU/DDS/ABBA；没有性能改善结论。周期图、服务/action、真实CTF与业务生命周期桥接仍待实现，见 [接入说明](docs/ROS_TOPOLOGY_AND_TRACING.md)。
+
 ## Docker三类机器人参考拓扑（2026-10-06）
 
 新增源码checkout场景和独立镜像入口，不修改18个perfkit生产模块或0.8.1包版本。实际环境为Docker Desktop Linux VM、原生ARM64、Ubuntu22/Humble、Python3.10.12/Fast DDS；使用已缓存的官方ARM64基础镜像，未验证此次外网拉取、AMD64或Orin/Thor运行。镜像编译已有C01/S01工具，但本次没有运行其性能套件。
