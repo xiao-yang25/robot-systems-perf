@@ -101,6 +101,25 @@ class EvidenceTests(unittest.TestCase):
             self.assertIn('rcl library missing', next(r['reason'] for r in result['checks'] if r['name']=='sdk-runtime'))
             self.assertFalse(result['events_observed'])
 
+    def test_babeltrace_one_help_and_two_version_protocol(self):
+        for major in (1,2):
+            with self.subTest(major=major), tempfile.TemporaryDirectory() as directory:
+                args=request(Path(directory)); args.output.mkdir(); calls=[]
+                def invoke(argv,folder,env,**kwargs):
+                    calls.append((argv,kwargs))
+                    if str(argv[0])=='/test/babeltrace':
+                        if '--help' in argv:
+                            return BABELTRACE_HELP if major==1 else 'Usage: babeltrace2 [COMMAND]'
+                        if '--version' in argv and major==2: return 'Babeltrace 2.0.4'
+                        raise AssertionError('unsupported Babeltrace version protocol')
+                    raise RuntimeError('explicit unrelated dependency missing in unit fixture')
+                with patch.object(trace.shutil,'which',side_effect=lambda name,**kw: '/test/babeltrace' if name=='babeltrace' else None), patch.object(trace,'digest',return_value='0'*64), patch.object(trace,'command',side_effect=invoke):
+                    result=trace.preflight(args,args.output,{})
+                self.assertTrue(next(row['available'] for row in result['checks'] if row['name']=='babeltrace'))
+                probes=[(argv,kw) for argv,kw in calls if argv[0]=='/test/babeltrace']
+                self.assertEqual(probes[0][1]['allowed_returncodes'],(0,1))
+                self.assertEqual([argv[-1] for argv,kw in probes],['--help'] if major==1 else ['--help','--version'])
+
 
 # Controlled stand-ins exercise the real CLI, Linux pidfds, signals and disk evidence.
 # Their streams are textual synthetic data, NOT real LTTng/CTF samples.
@@ -124,11 +143,13 @@ if a=='destroy':
  (root/'destroyed').write_text('yes')
 print('ok')
 '''
-FAKE_BABELTRACE = '''import sys
+BABELTRACE_HELP = (Path(__file__).parent/'fixtures/babeltrace-1.5.8-help.txt').read_text()
+FAKE_BABELTRACE = """import sys
 from pathlib import Path
-if '--version' in sys.argv: print('BabelTrace Trace Viewer and Converter 1.5.8')
-else: print((Path(sys.argv[1])/'stream').read_text())
-'''
+if '--help' in sys.argv: print(HELP); sys.exit(1)
+if '--version' in sys.argv: print('unrecognized --version',file=sys.stderr); sys.exit(2)
+print((Path(sys.argv[1])/'stream').read_text())
+""".replace('HELP', repr(BABELTRACE_HELP))
 FAKE_PYTHON = '''import json,os,sys
 from pathlib import Path
 print(json.dumps({'python':sys.executable,'ros_distro':'TEST'}))

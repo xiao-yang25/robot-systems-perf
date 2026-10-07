@@ -1,5 +1,26 @@
 # 验证记录
 
+## ROS tracing 离线回调分析（2026-10-07）
+
+基线 `fff94bf730e316481f9897701ffe0381b2b3dce4`，新增独立源码入口 [analyze_ros_trace.py](scripts/analyze_ros_trace.py)、官方bt2解码子进程与标准库分析模块，见 [输出契约](docs/ROS_TRACE_ANALYSIS.md)。perfkit 相对 `d96ed77d695f63a60d52c312478aa79a9b4f38c8` 无差异，18个核心模块及0.8.1 wheel未改，不将框架事件转换为业务事件。
+
+- 最终相关45项在 Docker Desktop 原生ARM64 Linux / Python3.10.12通过（3.721秒，退出0），不运行全量或性能套件。包括已知nearest-rank、整数/有理数精度、身份/namespace不符、相同地址不同PID、PID重启范围、句柄冲突/缺初始化/使用时无效、重入/交叉/跨线程/缺start-end、负时长/缺钟/不同钟、缺失及非零损失范围、防覆盖和真实SIGTERM终态叠加OSError。
+- 官方bt2 2.0.4 的 `sink.ctf.fs` 生成 synthetic CTF，`source.ctf.fs`实际解码验证字段、原始cycles、Epoch offset、stream/packet、discarded消息count=4、独立decoder CLI和父capture CLI。真实SIGTERM取消后父退出130、状态interrupted、自有decoder已不存在、外部测试对象存活、原始CTF摘要不变。
+- 实际安装的 Babeltrace1.5.8以完整help探测通过，不调用其不支持的--version；2.x协议用受控单测验证。旧采集回归采用测试站位，没有新建真实ROS/LTTng采集会话。
+- 另保存13条ROS格式事件、3对回调的官方writer测试CTF及实际分析输出；给定区间100/200/300ns，nearest-rank P50/P95/P99/max复核为200/300/300/300ns，2次发布共享1个进程内message地址。该数据是测试生成，不是机器人业务、现场500回调样本或性能基线。
+- 宿主macOS运行同45项，13项因Linux/bt2依赖明确skip；这部分不算官方解码通过。初次生成损失夹具仅在末尾添加discard消息，没有后续packet可保存累计计数；补正确following packet后通过，不称产品修复。独立审查使用既有隔离镜像、只读挂载和禁网环境另跑相关45项（3.640秒）通过；最后仅补decoder loss的计数类型、channel未知原因与覆盖元数据，作者重跑45项和既有CTF新目录分析通过，独立复核该字段差异，结论APPROVE，限本增量。
+
+本地证据在忽略的 `results/ros-trace-offline-local-20261007/`，包含最终局部日志、测试生成原始CTF/manifest、派生输出、执行配置及脚本摘要。依赖仅装在本次隔离测试容器，不改宿主/生产SDK。四个最终脚本SHA256：
+
+| 脚本 | SHA256 |
+| --- | --- |
+| scripts/analyze_ros_trace.py | d1523a55d952de056bcf3cb386876cee7f61704f5bf925a75d8d514cc9a28dd0 |
+| scripts/ros_trace_analysis.py | 54c4ce6182def042951ec0285f7060679bd809af1fbe44f5ed86a8a749729bc0 |
+| scripts/ros_trace_bt2.py | f79f3b2ab6219032e10a1f8c17763f458fbab812c6526d862f61424953791706 |
+| scripts/collect_ros_trace.py | d040b76a31ded476b861d8bb0258db1797947e0516003b0c09949bfa07f7515c |
+
+**现场回归未运行**：未获取Orin原始CTF或其离线派生证据，不能核验用户提供的500次目标发布、507对回调或目标分位数。下一步只对既有数据在新目录离线复核，不重采、不重跑三机/全量/C01/S01/GPU/DDS/ABBA。时钟桥接、资源生命周期关联、真实业务E2E及预算仍未验收；温度skipped，deadline/budget未配置，business_acceptance=not_evaluated，没有版本性能收益判断。
+
 ## 受控 ROS tracing 接入（2026-10-07）
 
 新增源码脚本 `scripts/collect_ros_trace.py` 和 [现场说明](docs/ROS_TRACE_CAPTURE.md)，不修改18个perfkit生产模块、0.8.1 wheel或C++基准。复用已有C01自有进程，支持一个明确SDK/RMW的预检、PID+namespace+随机名称过滤、限时采集、原始CTF清单和Babeltrace解码证据。仅要求已知主线程初始化、发布和回调事件；不实现业务E2E、时钟映射或CTF损失解析。

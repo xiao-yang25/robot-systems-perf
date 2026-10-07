@@ -62,12 +62,12 @@ def digest(path):
     return hasher.hexdigest()
 
 
-def command(argv, folder, env, timeout=10):
+def command(argv, folder, env, timeout=10, allowed_returncodes=(0,)):
     """Bound both execution time and combined raw output; record failures too."""
     folder.mkdir()
     owner = OwnedProcesses()
     record = {'argv': list(map(str, argv)), 'start_ns': time.monotonic_ns(),
-              'returncode': None, 'error': None, 'identity': None, 'max_output_bytes': 4 * 1024 * 1024}
+              'returncode': None, 'error': None, 'identity': None, 'allowed_returncodes': list(allowed_returncodes), 'max_output_bytes': 4 * 1024 * 1024}
     save(folder/'command.json', record['argv'])
     primary = None
     try:
@@ -81,7 +81,7 @@ def command(argv, folder, env, timeout=10):
                 record.update(captured_bytes=size, returncode=process.returncode)
                 if failure:
                     raise RuntimeError(failure)
-                if process.returncode != 0:
+                if process.returncode not in allowed_returncodes:
                     raise RuntimeError('command exited '+str(process.returncode)+': '+str(folder/'stderr.bin'))
             finally:
                 process.stdout.close(); process.stderr.close()
@@ -127,11 +127,20 @@ def preflight(args, output, env):
             path = shutil.which(name, path=env.get('PATH'))
             if not path:
                 raise RuntimeError(name+' executable missing')
-            text = command([path, '--version'], output/('probe-'+name), env)
             if name == 'lttng':
+                text = command([path, '--version'], output/('probe-'+name), env)
                 valid = re.search(r'\(LTTng Trace Control\) 2\.', text)
             else:
-                valid = re.search(r'(?:BabelTrace Trace Viewer and Converter|babeltrace(?:2)?)\s+(?:1|2)\.', text, re.I)
+                # Babeltrace 1.5.8 has no --version. Its complete help carries
+                # the version banner; only this help probe may return 1.
+                text = command([path, '--help'], output/('probe-'+name), env, allowed_returncodes=(0,1))
+                if re.search(r'^BabelTrace Trace Viewer and Converter 1\.', text):
+                    from scripts.compare_tools import validate_tool_probe
+                    validate_tool_probe('babeltrace', text)
+                    valid = True
+                else:
+                    text = command([path, '--version'], output/'probe-babeltrace2-version', env)
+                    valid = re.search(r'babeltrace(?:2)?\s+2\.', text, re.I)
             if not valid:
                 raise RuntimeError('unrecognized '+name+' version output')
             return {'path': str(Path(path).resolve()), 'sha256': digest(Path(path)), 'version_output': text}

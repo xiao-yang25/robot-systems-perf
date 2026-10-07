@@ -125,7 +125,7 @@ robot-perf-ros --monitor-run results/business-001 --graph --domain-id 0 \
   --ros-python /usr/bin/python3 --output results/ros-evidence-001
 ```
 
-核心不增加ROS依赖，图查询使用已有SDK对应的rclpy解释器。图可见不等于本地PID归属；可选导入规范化节点初始化元数据，仅标外部证据身份一致性。原生CTF/真实追踪SDK、消息链路时延和deadline尚未完成。执行方式、未知QoS、证据层次与一次设备复核见 [M2b指南](docs/ROS_BUSINESS_EVIDENCE.md)。
+核心不增加ROS依赖，图查询使用已有SDK对应的rclpy解释器。图可见不等于本地PID归属；可选导入规范化节点初始化元数据，仅标外部证据身份一致性。真实追踪SDK及现场CTF需单独核验；源码入口已有离线回调分析，消息链路时延和deadline仍待接入。执行方式、未知QoS、证据层次与一次设备复核见 [M2b指南](docs/ROS_BUSINESS_EVIDENCE.md)。
 
 0.7.0核心回归已有三机通过反馈，Orin的Humble/Fast DDS图查询通过；Thor真实ROS仍需定位已有SDK。0.7.1新增独立环境预检及显式SDK/RMW选择；0.7.2修正统一回归温度跳过传递和依赖失败诊断：
 
@@ -135,7 +135,7 @@ robot-perf-ros --preflight --domain-id 0 --graph-wait 0 \
   --rmw rmw_fastrtps_cpp --output results/ros-preflight-001
 ```
 
-有限现场回归入口、QoS兼容边界和实际验证矩阵见 [ROS环境指南](docs/ROS_ENVIRONMENT.md)。真实tracing与业务路径仍待后续。
+有限现场回归入口、QoS兼容边界和实际验证矩阵见 [ROS环境指南](docs/ROS_ENVIRONMENT.md)。真实tracing与业务路径验收仍待后续。
 
 ## 结果与检查
 
@@ -160,4 +160,4 @@ Docker Desktop 的 Linux VM 结果不能作为 Jetson 基线。Orin/Thor 实机�
 - [平台补充模板](templates/platform-profile.template.json)：人工记录未自动采集的设备与业务条件。
 - [外部性能工具参考](docs/TOOL_LANDSCAPE.md)：官方与开源工具、Orin/Thor 兼容边界、两阶段接入建议和本地下载说明。
 
-受控真实 tracing 接入：见 [ROS 追踪采集](docs/ROS_TRACE_CAPTURE.md)，先做一个 SDK 的预检和一次自有节点短窗口，再适配真实 CTF；不要求重复全量性能套件。
+受控真实 tracing 接入：见 [ROS 追踪采集](docs/ROS_TRACE_CAPTURE.md)，既有追踪数据可用 [离线回调分析](docs/ROS_TRACE_ANALYSIS.md) 解码和统计 callback_interval，保留历史身份、时钟及 scoped loss；不等于业务E2E。已有CTF时不必重新采集，不要求重复全量性能套件。

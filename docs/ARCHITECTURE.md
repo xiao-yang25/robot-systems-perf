@@ -130,3 +130,10 @@ ROS解释器通过同包内独立文件执行rclpy适配器，只创建自有观
 先绑定exec等待门内的PID/starttime和namespace，配置vpid+pid_ns+随机ELF名称过滤，启动会话后再放行ROS初始化。正常停止会话后才回收PID；控制故障时有界回收并保留会话残留/unknown与错误。随机名称防护限定已知主线程，不是通用业务身份认证；后续真实CTF身份关联仍需来源、时钟和生命周期桥接。
 
 保留原始CTF、命令stdout/stderr和字节摘要，分开compiled、会话活动和事件观察；loss与callback latency暂为null，业务not_evaluated。当前选择源码脚本而非新增wheel入口，使真实样本字段未稳定时不改变核心公开API；有真实CTF样本后再决定适配契约。执行与限制见 [受控ROS追踪](ROS_TRACE_CAPTURE.md)。
+
+
+## 独立的 CTF 离线分析
+
+`scripts/analyze_ros_trace.py` 仅处理已有来源，官方 bt2 解码放在自有、限时子进程；标准库的 `ros_trace_analysis.py` 处理历史身份、对象注册/使用时有效性、线程栈和精确cycle差。选择独立源码入口保留0.8.1核心契约，不把外部解码依赖嵌入monitor或业务事件导入。
+
+句柄限定历史进程与生命周期，初始化可以先登记引用，使用时所有父对象须已有效；句柄复用、缺初始化、线程交叉及不同钟不补造关联。只输出回调区间分布和不完整分类，不把message地址当sample_id；loss分开记录通道、decoder与未知业务范围。CTF↔host桥接未确认时禁止资源时间关联与预算判断。权威终态独立于派生文件落盘，取消仅回收自有decoder。输出契约、一次既有数据现场复核与限制见 [离线分析](ROS_TRACE_ANALYSIS.md)。

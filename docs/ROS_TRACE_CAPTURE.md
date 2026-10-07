@@ -7,7 +7,7 @@
 ## 先决条件与边界
 
 - Linux 原生环境，已有兼容 ROS SDK、tracing 编译支持、一个明确的 RMW、LTTng 2.x、Babeltrace 1.x/2.x CLI 和**已经运行**的同权限 session daemon。本工具不安装依赖、不执行 SDK setup、不启动或停止 daemon，不改实时权限、频率、亲和性或生产节点。
-- SDK 环境由操作者事先加载，明确 `--ros-python`、`--rmw` 和 `--domain-id`；可用 `--sdk-prefix` 限制实际加载的 tracetools 库来源。该检查不认证完整 overlay，也不证明源码—构建绑定。pid_ns/procname 上下文不支持时明确失败，不降级为仅 PID 过滤。Babeltrace 2 的实际版本兼容性仍需现场验证。
+- SDK 环境由操作者事先加载，明确 `--ros-python`、`--rmw` 和 `--domain-id`；可用 `--sdk-prefix` 限制实际加载的 tracetools 库来源。该检查不认证完整 overlay，也不证明源码—构建绑定。pid_ns/procname 上下文不支持时明确失败，不降级为仅 PID 过滤。Babeltrace 1.5.8 使用完整 `--help` 横幅和选项探测（help可返回1），不调用其不支持的 `--version`；2.x另外核对版本。其他版本及现场兼容仍需局部核验。
 - `build/ros_bench` 已在选定 SDK 下构建；可用 `--ros-bench` 指向已有构建。文件摘要、实际 RMW 和加载的 tracetools 路径/摘要分别记录和核对。
 - `--view host/container` 是环境声明，不提供硬件隔离。Docker 结果不能作为 Orin/Thor 宿主调度或性能证据。
 - 无温度发现或读取路径，request.json 明确记录 skipped。此脚本不自动启动资源 monitor；事件与资源窗口的生命周期桥接仍需后续适配。
@@ -70,6 +70,6 @@ python3 scripts/collect_ros_trace.py \
 
 预检成功后，只跑一个 5 秒自有节点发布窗口；核对原始 CTF 非空、逐文件摘要、两 PID 的初始化/发布/回调事件及实际库来源，核对最终状态、cleanup_errors 和进程回收。保留所有失败记录；没有业务样本关联时不计算业务 E2E。温度访问应为零，可沿用现场只读哨兵验证。
 
-首次验证范围不包含三机全量、C01/S01性能套件、GPU、DDS尾延迟或ABBA。得到真实样本后再实现 CTF 导出适配、时钟与身份桥接；此后才进入真实业务关联。
+首次验证范围不包含三机全量、C01/S01性能套件、GPU、DDS尾延迟或ABBA。已有 CTF 可以使用 [独立离线回调分析](ROS_TRACE_ANALYSIS.md)，不必重采。该分析保留同类时钟区间和损失范围；主机时钟/资源生命周期桥接与真实业务关联仍需后续。
 
 参考：[ros2_tracing Humble](https://github.com/ros2/ros2_tracing/tree/humble)、[LTTng 事件过滤](https://github.com/lttng/lttng-tools/blob/stable-2.13/doc/man/lttng-enable-event.1.txt)、[Babeltrace](https://github.com/efficios/babeltrace)。与[ROS拓扑](ROS_TOPOLOGY_AND_TRACING.md)、[ROS证据](ROS_BUSINESS_EVIDENCE.md)配套使用。
