@@ -60,6 +60,10 @@ dot -Tsvg results/topology-001.dot -o results/topology-001.svg
 
 这次仅支持单个 topic 快照。服务/action、周期图采集、快照差异、静态配置解析、真实 CTF 关联均未实现。图中名称可能敏感，派生文件与原始证据留在本地 `results/`，发布前由操作者决定匿名化范围。
 
+## 受控真实追踪接入
+
+新增源码入口 `scripts/collect_ros_trace.py`：预检选定 SDK/RMW 与已有 LTTng daemon，按自有测试 PID 过滤 ROS 用户态事件，限时保存真实 CTF 和原始解码证据。它不代替 CTF 时钟/生命周期适配或业务 E2E；执行与验收见 [受控 ROS 追踪](ROS_TRACE_CAPTURE.md)。
+
 ## 动态运行怎样处理
 
 动态部署存在节点创建/销毁、组件加载/卸载、重启、PID 重用和短暂发现缺失。后续图序列应按固定的低频周期与总窗口保存每次原始观察；每次图保留自己的时间窗口与状态，不能拼接为某一时刻的“完整图”。

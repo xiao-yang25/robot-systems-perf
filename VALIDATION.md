@@ -1,5 +1,18 @@
 # 验证记录
 
+## 受控 ROS tracing 接入（2026-10-07）
+
+新增源码脚本 `scripts/collect_ros_trace.py` 和 [现场说明](docs/ROS_TRACE_CAPTURE.md)，不修改18个perfkit生产模块、0.8.1 wheel或C++基准。复用已有C01自有进程，支持一个明确SDK/RMW的预检、PID+namespace+随机名称过滤、限时采集、原始CTF清单和Babeltrace解码证据。仅要求已知主线程初始化、发布和回调事件；不实现业务E2E、时钟映射或CTF损失解析。
+
+- 最终Docker Desktop原生ARM64 Linux/Python3.10相关48项检查全部通过，其中新增18项；包含真实SIGTERM、最终落盘SIGTERM叠加OSError、晚取消保留首因、stop/destroy同时失败、ELF exec随机comm、超时回收、外部进程存活、防覆盖、namespace同号/错误名称拒绝和原始记录摘要。Linux CLI的LTTng/解码器/SDK/事件流使用受控站位，**不证明真实CTF兼容**。
+- 宿主macOS相关55项通过（10项Linux场景跳过）是namespace加固后的中间检查；最终新增测试由上述Linux执行覆盖。未重跑全量单测或性能套件。
+- 对现有ARM64参考镜像实际执行新预检，返回1、ready=false、终态failed：lttng/babeltrace不存在，tracetools编译支持false。二进制存在并记录摘要，SDK原始探测输出保留。没有安装或更改SDK/daemon，没有正向CTF样本，不能宣布Orin/Thor tracing已验收。
+- 独立审查发现namespace数字PID混入、停止失败后PID释放与活动状态未知、晚取消覆盖原错等边界。加入pid_ns/随机comm防护、unknown/残留记录和独立primary_error后复审 APPROVE WITH NON-BLOCKING FOLLOW-UPS，限受控实现范围；真实SDK/CTF、发行版与Babeltrace实际兼容仍待有限现场验证。
+
+最终脚本SHA256为 `58e98a954fcfb82d26eb493ea18876b225d2c4fd21d4eaed58c9d3353898e70f`，测试文件为 `b777a067f63cb8caed042442531675c693c91775a5077e966597e45365399bc7`。开发证据保存在忽略的 `results/ros-trace-intake-local-20261007/`，含最终Linux日志及真实缺依赖预检。初次最终状态回归的测试写出钩子误把列表当字典，修正夹具后通过，不称设备缺陷或SDK修复。
+
+下一步仅需明确Orin现有兼容SDK，预检后做一个5秒自有节点窗口；缺依赖停止。没有性能改善、业务通过或丢事件为零的声明，不重跑三机/C01/S01/GPU/DDS/ABBA。
+
 ## 离线参考与 ROS topic 拓扑导出（2026-10-07）
 
 新增源码工具、来源清单和接入说明，不改变18个perfkit模块、0.8.1安装包或生产采集入口。此增量使用宿主macOS ARM64/Python3.9，不连接设备或生产业务。

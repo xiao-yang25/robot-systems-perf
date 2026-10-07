@@ -121,3 +121,12 @@ ROS解释器通过同包内独立文件执行rclpy适配器，只创建自有观
 0.7.1环境预检复用同一有界query与终态路径，也不要求M2a输入。操作者先加载已有SDK环境；工具仅用sdk-prefix核对实际rclpy模块来源，再通过指定Python直接查询并核对显式RMW。SDK setup通常会启动前台子命令，工具内部source在超时后仅回收shell可能留下子孙进程；因此取消自动加载方案，避免为环境预检另建进程树管理器，也不修改全局SDK配置。现场包装器只exec选定Python，不加载setup。版本与模块一致性由wheel核对，不把源码预检冒称安装CLI执行。契约和矩阵见 [ROS环境指南](ROS_ENVIRONMENT.md)。
 
 0.7.2只在适配器返回observed/empty后核对环境来源，依赖、初始化或图查询失败保留首个原因；解释器路径在导入rclpy前记录。统一现场回归的温度跳过是显式选择，传到所有真实采集和取消路径，并以测试专用I/O哨兵验证。哨兵不进入产品wheel，不改变采样频率、身份或共享资源计量。
+
+
+## 受控 tracing 采集边界
+
+新增源码入口 `scripts/collect_ros_trace.py` 独立于monitor与wheel，复用tracetools/LTTng/Babeltrace以及已有pidfd进程所有权辅助。与旧双RMW tracing对照分开：一次固定自有C01窗口即可验证框架事件，不依赖两种RMW，不自动改SDK或业务。
+
+先绑定exec等待门内的PID/starttime和namespace，配置vpid+pid_ns+随机ELF名称过滤，启动会话后再放行ROS初始化。正常停止会话后才回收PID；控制故障时有界回收并保留会话残留/unknown与错误。随机名称防护限定已知主线程，不是通用业务身份认证；后续真实CTF身份关联仍需来源、时钟和生命周期桥接。
+
+保留原始CTF、命令stdout/stderr和字节摘要，分开compiled、会话活动和事件观察；loss与callback latency暂为null，业务not_evaluated。当前选择源码脚本而非新增wheel入口，使真实样本字段未稳定时不改变核心公开API；有真实CTF样本后再决定适配契约。执行与限制见 [受控ROS追踪](ROS_TRACE_CAPTURE.md)。

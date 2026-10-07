@@ -159,3 +159,5 @@ Docker Desktop 的 Linux VM 结果不能作为 Jetson 基线。Orin/Thor 实机�
 - [设备测试指南](docs/JETSON_RUNBOOK.md)：配置、资源限制、结果判断和诊断边界。
 - [平台补充模板](templates/platform-profile.template.json)：人工记录未自动采集的设备与业务条件。
 - [外部性能工具参考](docs/TOOL_LANDSCAPE.md)：官方与开源工具、Orin/Thor 兼容边界、两阶段接入建议和本地下载说明。
+
+受控真实 tracing 接入：见 [ROS 追踪采集](docs/ROS_TRACE_CAPTURE.md)，先做一个 SDK 的预检和一次自有节点短窗口，再适配真实 CTF；不要求重复全量性能套件。
