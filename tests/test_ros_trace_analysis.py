@@ -197,14 +197,75 @@ Channels:
         Discarded events: 9
 '''
 
+RECORDING_LIST=LIST.replace('Tracing session','Recording session',1)
+
 
 class OfflineCLITests(unittest.TestCase):
     def test_loss_parser_requires_exact_session_stop_domain_and_channel(self):
-        rows,reason=cli.parse_channel_list(LIST,'own',{'path':'synthetic','sha256':'0'*64})
-        self.assertEqual(rows[0]['count'],0); self.assertIsNone(reason)
-        for text,session in [(LIST,'other'),(LIST.replace('[inactive]','[active]'),'own'),
-                              (LIST.replace('User space','Kernel'),'own'),(LIST.replace('Discarded events: 0','Discarded packets: 0'),'own')]:
-            self.assertEqual(cli.parse_channel_list(text,session,{})[0],[])
+        for text in (LIST,RECORDING_LIST):
+            with self.subTest(header=text.splitlines()[0]):
+                source={'path':'synthetic','sha256':'0'*64}
+                rows,reason=cli.parse_channel_list(text,'own',source)
+                self.assertEqual(rows[0]['count'],0); self.assertIsNone(reason)
+                self.assertEqual(rows[0]['source'],source)
+                invalid=[(text,'other'),(text,'ow'),(text,'prefix-own'),(text,'own-extra'),
+                    (text.replace('session own:','session own-extra:'),'own'),
+                    (text.replace('[inactive]','[active]'),'own'),
+                    (text.replace('User space','Kernel'),'own'),
+                    (text.replace('- other:','- ros:'),'own'),
+                    (text.replace('Discarded events: 0','Discarded packets: 0'),'own'),
+                    (text.replace('Discarded events: 0','Discarded events: 0\n        Discarded events: 0'),'own')]
+                for value,session in invalid:
+                    with self.subTest(value=value,session=session):
+                        rows,reason=cli.parse_channel_list(value,session,{})
+                        self.assertEqual(rows,[]); self.assertTrue(reason)
+        rows,reason=cli.parse_channel_list(LIST.replace('Tracing session','Unknown session'),'own',{})
+        self.assertEqual(rows,[]); self.assertTrue(reason)
+
+    def test_recording_zero_preserves_interval_and_loss_scopes(self):
+        data,history,emit=fixture(); pair(emit)
+        baseline=analyze(data,history,channel_loss())
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for index,op in enumerate(('stop','list')):
+                folder=root/('control-%02d'%index); folder.mkdir()
+                (folder/'command.json').write_text(json.dumps(['lttng','--no-sessiond',op,'own']))
+                (folder/'result.json').write_text(json.dumps({'start_ns':index+1,'end_ns':index+2,'returncode':0,'error':None}))
+                (folder/'stdout.bin').write_text(RECORDING_LIST if op=='list' else '')
+            raw=(root/'control-01/stdout.bin').read_bytes()
+            sources=cli.Sources(); loss=cli.loss_evidence(root,{'session_name':'own'},data,sources)
+            result=analyze(data,history,loss); sources.unchanged()
+            self.assertEqual(result['loss']['channel_discarded_events'][0]['count'],0)
+            self.assertEqual(result['quality']['status'],'observed')
+            self.assertEqual(result['intervals'],baseline['intervals'])
+            self.assertEqual(result['callback_interval'],baseline['callback_interval'])
+            self.assertIsNone(result['loss']['business_exporter_dropped_events'])
+            self.assertIsNone(result['loss']['whole_chain_loss']); self.assertIsNone(result['business_e2e'])
+            self.assertEqual(result['business_acceptance'],'not_evaluated')
+            self.assertEqual((root/'control-01/stdout.bin').read_bytes(),raw)
+
+    def test_loss_evidence_requires_successful_stop_and_later_matching_list(self):
+        cases=[('stop failure','stop','returncode',1),('list failure','list','returncode',1),
+               ('list before stop end','list','start_ns',0),('stop error','stop','error','test failure'),
+               ('list error','list','error','test failure'),('wrong stop session','stop','session','own-extra'),
+               ('wrong list session','list','session','own-extra')]
+        for text in (LIST,RECORDING_LIST):
+            for name,operation,key,value in cases:
+                with self.subTest(header=text.splitlines()[0],case=name), tempfile.TemporaryDirectory() as directory:
+                    root=Path(directory)
+                    for index,op in enumerate(('stop','list')):
+                        folder=root/('control-%02d'%index); folder.mkdir()
+                        argv=['lttng','--no-sessiond',op,'own']
+                        record={'start_ns':index+1,'end_ns':index+2,'returncode':0,'error':None}
+                        if op==operation:
+                            if key=='session': argv[-1]=value
+                            else: record[key]=value
+                        (folder/'command.json').write_text(json.dumps(argv))
+                        (folder/'result.json').write_text(json.dumps(record))
+                        (folder/'stdout.bin').write_text(text if op=='list' else '')
+                    loss=cli.loss_evidence(root,{'session_name':'own'},{},cli.Sources())
+                    self.assertEqual(loss['channel_discarded_events'],[])
+                    self.assertTrue(loss['channel_discarded_events_reason'])
 
     def test_normalized_cli_preserves_inputs_and_refuses_overwrite(self):
         data,history,emit=fixture(); pair(emit)

@@ -1,5 +1,18 @@
 # 验证记录
 
+## ROS tracing 损失头部与版本测试兼容修补（2026-10-07）
+
+基线 `125f77bbb98f89722f328fac8e71b0bc6036201f`。生产改动仅为 `parse_channel_list` 接受已确认的 `Tracing session` / `Recording session` 两种头部；回调、身份和时钟计算模块及perfkit未改。Babeltrace测试按明确路径和实际精确版本选择，不再把PATH中的同名CLI假定为1.5.8；说明见 [有限复核](docs/ROS_TRACE_ANALYSIS.md#125f77b-现场反馈的有限兼容复核)。
+
+- 修改前用受控Recording诊断复现损失计数缺失。修改后，两种头部均能解析范围明确的0；错session（含前缀/后缀）、active、错误domain、歧义ros通道及缺/重复统计仍unknown。成功stop后list、失败/错误/先于stop结束或错名称均有有限回归；原始诊断字节不变，已知回调区间及分位数不变，业务exporter与全链路损失仍null。
+- 宿主macOS只运行本次9项针对性检查，7通过、2因Linux CLI/pidfd明确skip。没有把skip作为工具版本正向验收。
+- Docker Desktop原生ARM64 Linux / Python3.10.12的9项针对性检查全部通过。官方APT包提供真实Babeltrace1.5.8与2.0.4，仅安装于本次临时容器；真实版本输出保留，没有修改宿主、生产SDK或全局PATH。
+- 子进程PATH中的 `babeltrace` 指向真实官方2.0.4时，基线旧测试复现错误版本断言失败；修复后仅跑两个实际版本检查，1.5.8项明确skip（观察到2.0.4）、2.0.4项通过。相同PATH下显式指定两个真实版本路径后，两项均通过。没有伪造CLI输出；单元选择策略使用明确synthetic文本，不称实际安装证明。
+
+本地证据在忽略的 `results/ros-trace-compatibility-20261007/`，包含基线复现、3组有限检查日志、真实版本横幅和最终源文件SHA256。**现场回归未运行**：本机不能访问Orin原始采集或125f77b测试目录，未重新解码现场CTF；用户提供的7758事件、500目标发布/回调及四项耗时不是本次新实测。下一步只对既有现场数据在新目录离线复核一次，不重采。
+
+本轮不运行全量、三机、C01/S01/GPU/DDS/ABBA，不修改生产算法或启动配置、不启用生产追踪；温度skipped、synthetic=true、deadline/budget未配置、business_acceptance=not_evaluated。当前证据不支持真实业务E2E、全链路无损或版本性能收益结论。
+
 ## ROS tracing 离线回调分析（2026-10-07）
 
 基线 `fff94bf730e316481f9897701ffe0381b2b3dce4`，新增独立源码入口 [analyze_ros_trace.py](scripts/analyze_ros_trace.py)、官方bt2解码子进程与标准库分析模块，见 [输出契约](docs/ROS_TRACE_ANALYSIS.md)。perfkit 相对 `d96ed77d695f63a60d52c312478aa79a9b4f38c8` 无差异，18个核心模块及0.8.1 wheel未改，不将框架事件转换为业务事件。

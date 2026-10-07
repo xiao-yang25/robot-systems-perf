@@ -117,7 +117,7 @@ flowchart LR
 
 ## 损失的范围
 
-只在原始控制记录确认同一会话成功 stop、其后成功 list，且 list 中该会话 inactive、user space 的 ros 通道明确返回统计时，填 `channel_discarded_events`。每项保存 count_type、channel、domain、session、来源路径/摘要、观察阶段和覆盖范围。缺证据、不同会话/通道或无法读取时保持未知；非零计数令质量 partial。
+只在原始控制记录确认同一会话成功 stop、其后成功 list，且 list 的 `Tracing session <完整名称>: [inactive]` 或 `Recording session <完整名称>: [inactive]` 头部匹配、user space 的唯一 ros 通道明确返回统计时，填 `channel_discarded_events`。每项保存 count_type、channel、domain、session、来源路径/摘要、观察阶段和覆盖范围。缺证据、不同会话/通道或无法读取时保持未知；非零计数令质量 partial。
 
 bt2 discarded events/packets 分别保留 stream 范围、消息和可用计数。没有 decoder discarded 消息不能判零；packet loss 不混入 event loss。CTF中累计计数需要后续packet才可能可见，单packet/未解码出损失消息不能单独证明无丢失。业务 exporter dropped_events 和 whole_chain_loss 始终 null；LTTng通道统计不填入现有业务导入的 window.dropped_events。
 
@@ -138,3 +138,31 @@ python3 -m unittest tests.test_ros_trace_analysis tests.test_ros_trace_capture t
 bt2集成测试需已具备官方依赖；缺bt2明确skip，不算实际解码通过。测试生成 synthetic CTF，包含字段/时钟、同地址复用、CLI、防覆盖、损失消息和真实SIGTERM回收。测试不启动 ROS/LTTng，不代替现场回归；本次没有全量/三机/C01/S01/GPU/DDS/ABBA。
 
 参考：[官方 bt2 使用示例](https://babeltrace.org/docs/v2.0/python/bt2/examples.html)、[时钟类与偏移](https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-clock-cls.html)、[ROS追踪采集](ROS_TRACE_CAPTURE.md)、[业务事件契约](BUSINESS_EVENTS.md)。
+
+
+## 125f77b 现场反馈的有限兼容复核
+
+两个已复现问题分别是 LTTng 2.13.4 的 `Recording session` 头部未识别，以及测试把 PATH 中的 `babeltrace` 固定当作1.5.8。当前解析器兼容两种确认形式，仍严格核对完整名称、inactive、成功stop后list、User space、唯一ros通道和统计。通道0只表示对应缓冲区范围，业务 exporter 和全链路损失仍为null。
+
+Babeltrace 实际工具检查已分离为 `BabeltraceProbeTests`，不依赖bt2包；Linux/pidfd及指定实际CLI版本仍为先决条件。用以下变量明确选择现场已有版本，不安装依赖或更改系统 PATH：
+
+```bash
+RSP_TEST_BABELTRACE_158=/path/to/babeltrace-1.5.8 \
+RSP_TEST_BABELTRACE_204=/path/to/babeltrace-2.0.4 \
+python3 -m unittest tests.test_ros_trace_bt2.BabeltraceProbeTests -v
+```
+
+省略变量时仅检查PATH候选的**实际**完整版本：1.5.8通过help横幅确认，2.0.4通过版本输出确认；不会按文件名推断。明确选择的路径版本不符时skip并解释，不暗中换成其他版本。所需版本不存在时该项skip，不计为正向通过；2.0.4项独立检查。若只存在2.0.4且 `babeltrace` 指向它，1.5.8项应skip，2.0.4项仍可通过。
+
+只核验这两处可运行：
+
+```bash
+python3 -m unittest \
+  tests.test_ros_trace_analysis.OfflineCLITests.test_loss_parser_requires_exact_session_stop_domain_and_channel \
+  tests.test_ros_trace_analysis.OfflineCLITests.test_recording_zero_preserves_interval_and_loss_scopes \
+  tests.test_ros_trace_analysis.OfflineCLITests.test_loss_evidence_requires_successful_stop_and_later_matching_list \
+  tests.test_ros_trace_bt2.BabeltraceSelectionTests \
+  tests.test_ros_trace_bt2.BabeltraceProbeTests -v
+```
+
+本机仅用受控诊断与真实版本CLI做有限检查；**现场回归未运行**。现场下一步只用已有CTF及原始stop/list在一个新输出目录离线复核：目标发布500次、回调500对、参数回调7对和既有四项分位数应保持一致；范围明确的通道discard应恢复0。不得改写原始诊断、重新采集或把本节用户提供的基准当成本次实测。时钟桥接、真实业务E2E与预算仍未验收。

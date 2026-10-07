@@ -80,7 +80,7 @@ def capture_history(root, sources):
 
 def parse_channel_list(text, session, source):
     """Only an exact stopped session/user-space channel statistic, no global zero."""
-    header=re.search(r'^Tracing session\s+([^\s:]+):\s*\[([^\]]+)\]',text,re.M)
+    header=re.search(r'^(?:Tracing|Recording) session\s+([^\s:]+):\s*\[([^\]]+)\]',text,re.M)
     if not header or header[1]!=session or header[2]!='inactive':
         return [],'session identity/stopped state not confirmed in list output'
     domains=re.split(r'^=== Domain:\s*(.*?)\s*===\s*$',text,flags=re.M)

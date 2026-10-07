@@ -1,6 +1,9 @@
 """Official bt2 writer/reader integration using generated synthetic CTF only."""
 import json
 import os
+import platform
+import re
+import shutil
 import signal
 import time
 from pathlib import Path
@@ -20,6 +23,36 @@ try:
     import bt2
 except ImportError:
     bt2 = None
+
+
+def select_babeltrace(version, env=None):
+    """Select an actual version, never infer it from the executable's name."""
+    env=dict(os.environ if env is None else env)
+    variable={'1.5.8':'RSP_TEST_BABELTRACE_158','2.0.4':'RSP_TEST_BABELTRACE_204'}[version]
+    configured=env.get(variable)
+    names=('babeltrace',) if version=='1.5.8' else ('babeltrace2','babeltrace')
+    candidates=[configured] if configured else [shutil.which(name,path=env.get('PATH')) for name in names]
+    observations=[]
+    for executable in dict.fromkeys(path for path in candidates if path):
+        try:
+            help_result=subprocess.run([executable,'--help'],env=env,stdin=subprocess.DEVNULL,
+                capture_output=True,text=True,timeout=5)
+            if help_result.returncode not in (0,1):
+                observations.append(executable+': help failed'); continue
+            text=help_result.stdout+'\n'+help_result.stderr
+            legacy=re.search(r'^BabelTrace Trace Viewer and Converter (1\.\d+\.\d+)(?:\s|$)',text,re.M)
+            if legacy:
+                actual=legacy[1]  # This family does not support --version.
+            else:
+                result=subprocess.run([executable,'--version'],env=env,stdin=subprocess.DEVNULL,
+                    capture_output=True,text=True,timeout=5)
+                banner=re.search(r'^babeltrace(?:2)?\s+(2\.\d+\.\d+)(?:\s|$)',result.stdout+'\n'+result.stderr,re.I|re.M)
+                actual=banner[1] if result.returncode==0 and banner else None
+            if actual==version: return executable
+            observations.append(executable+': actual '+str(actual))
+        except (OSError,subprocess.TimeoutExpired) as error:
+            observations.append(executable+': '+str(error))
+    raise unittest.SkipTest('Babeltrace '+version+' unavailable; set '+variable+' to its explicit executable; '+('; '.join(observations) or 'no candidate on PATH'))
 
 
 def write_ctf(root, rows, discarded=None):
@@ -116,27 +149,6 @@ class BT2IntegrationTests(unittest.TestCase):
             self.assertEqual(run.returncode,0,run.stderr)
             self.assertEqual(json.loads((root/'analysis/callback-analysis.json').read_text())['callback_interval']['samples'],3)
 
-    def test_installed_babeltrace_158_help_probe(self):
-        from argparse import Namespace
-        from unittest.mock import patch
-        import shutil
-        installed=shutil.which('babeltrace')
-        if not installed: self.skipTest('optional Babeltrace 1.x CLI unavailable')
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            args=Namespace(ros_bench=Path(sys.executable),ros_python=sys.executable,rmw='rmw_fastrtps_cpp',sdk_prefix=None)
-            original=collect.command
-            def only_babeltrace(argv,folder,env,**kw):
-                if argv[0]==installed: return original(argv,folder,env,**kw)
-                raise RuntimeError('unrelated runtime probe excluded from offline compatibility test')
-            with patch.object(collect.shutil,'which',side_effect=lambda name,**kw: installed if name=='babeltrace' else None), patch.object(collect,'command',side_effect=only_babeltrace):
-                result=collect.preflight(args,root,dict(os.environ))
-            row=next(row for row in result['checks'] if row['name']=='babeltrace')
-            self.assertTrue(row['available'],row)
-            self.assertIn('1.5.8',row['value']['version_output'])
-            self.assertEqual(json.loads((root/'probe-babeltrace/command.json').read_text()),[installed,'--help'])
-            self.assertFalse((root/'probe-babeltrace2-version').exists())
-
     def test_official_discard_message_preserves_count_scope(self):
         data,history,emit=fixture(); pair(emit)
         with tempfile.TemporaryDirectory() as directory:
@@ -194,6 +206,71 @@ class BT2IntegrationTests(unittest.TestCase):
             finally:
                 if process.poll() is None: process.kill(); process.wait()
                 external.terminate(); external.wait(timeout=5)
+
+
+class BabeltraceSelectionTests(unittest.TestCase):
+    """Synthetic probe text exercises selection policy, not installed versions."""
+    def probe(self, argv, **kwargs):
+        from tests.test_ros_trace_capture import BABELTRACE_HELP
+        if argv[0]=='/test/legacy':
+            self.assertEqual(argv[-1],'--help')
+            return subprocess.CompletedProcess(argv,1,BABELTRACE_HELP,'')
+        text='Usage: babeltrace2 [COMMAND]' if argv[-1]=='--help' else 'Babeltrace 2.0.4'
+        return subprocess.CompletedProcess(argv,0,text,'')
+
+    def test_explicit_legacy_path_does_not_assume_path_version(self):
+        from unittest.mock import patch
+        with patch.object(subprocess,'run',side_effect=self.probe), patch.object(shutil,'which') as lookup:
+            self.assertEqual(select_babeltrace('1.5.8',{'RSP_TEST_BABELTRACE_158':'/test/legacy'}),'/test/legacy')
+            lookup.assert_not_called()
+
+    def test_path_alias_pointing_to_two_skips_legacy_and_checks_two(self):
+        from unittest.mock import patch
+        with patch.object(subprocess,'run',side_effect=self.probe), patch.object(shutil,'which',side_effect=lambda name,**kw: '/test/two' if name=='babeltrace' else None):
+            with self.assertRaisesRegex(unittest.SkipTest,'actual 2.0.4'): select_babeltrace('1.5.8',{})
+            self.assertEqual(select_babeltrace('2.0.4',{}),'/test/two')
+
+    def test_explicit_wrong_version_skips_without_hidden_fallback(self):
+        from unittest.mock import patch
+        with patch.object(subprocess,'run',side_effect=self.probe), patch.object(shutil,'which') as lookup:
+            with self.assertRaisesRegex(unittest.SkipTest,'actual 2.0.4'):
+                select_babeltrace('1.5.8',{'RSP_TEST_BABELTRACE_158':'/test/two'})
+            lookup.assert_not_called()
+
+    def test_absent_version_and_version_prefix_do_not_pass(self):
+        from unittest.mock import patch
+        with patch.object(shutil,'which',return_value=None):
+            with self.assertRaisesRegex(unittest.SkipTest,'no candidate'): select_babeltrace('1.5.8',{})
+        with patch.object(shutil,'which',return_value='/test/two'), patch.object(subprocess,'run',return_value=subprocess.CompletedProcess([],0,'Babeltrace 2.0.40','')):
+            with self.assertRaisesRegex(unittest.SkipTest,'actual 2.0.40'): select_babeltrace('2.0.4',{})
+
+
+@unittest.skipUnless(platform.system()=='Linux','installed CLI pidfd probe requires Linux')
+class BabeltraceProbeTests(unittest.TestCase):
+    def assert_installed_probe(self, version):
+        from argparse import Namespace
+        from unittest.mock import patch
+        installed=select_babeltrace(version)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            args=Namespace(ros_bench=Path(sys.executable),ros_python=sys.executable,rmw='rmw_fastrtps_cpp',sdk_prefix=None)
+            original=collect.command
+            def only_babeltrace(argv,folder,env,**kw):
+                if argv[0]==installed: return original(argv,folder,env,**kw)
+                raise RuntimeError('unrelated runtime probe excluded from offline compatibility test')
+            with patch.object(collect.shutil,'which',side_effect=lambda name,**kw: installed if name=='babeltrace' else None), patch.object(collect,'command',side_effect=only_babeltrace):
+                result=collect.preflight(args,root,dict(os.environ))
+            row=next(row for row in result['checks'] if row['name']=='babeltrace')
+            self.assertTrue(row['available'],row)
+            self.assertRegex(row['value']['version_output'],re.escape(version)+r'(?:\s|$)')
+            self.assertEqual(json.loads((root/'probe-babeltrace/command.json').read_text()),[installed,'--help'])
+            if version=='1.5.8':
+                self.assertFalse((root/'probe-babeltrace2-version').exists())
+            else:
+                self.assertEqual(json.loads((root/'probe-babeltrace2-version/command.json').read_text()),[installed,'--version'])
+
+    def test_installed_babeltrace_158_help_probe(self): self.assert_installed_probe('1.5.8')
+    def test_installed_babeltrace_204_version_probe(self): self.assert_installed_probe('2.0.4')
 
 
 if __name__=='__main__': unittest.main()
